@@ -102,7 +102,8 @@ L898902C36UTO7408122F1204159ZE184226B&lt;&lt;&lt;&lt;&lt;10"></textarea>
 <footer>
   Validation is deterministic math (ICAO 9303 7-3-1 checksums), not an AI guess.
   A ✔ composite check proves the read matches the printed zone.
-  Camera tips: fill the frame with the data page, avoid glare on the MRZ band.
+  Camera tips: fill the frame with the data page, avoid glare on the MRZ band.<br>
+  OCR-B model © <a href="https://github.com/DoubangoTelecom/tesseractMRZ">DoubangoTelecom</a> (BSD-3-Clause) · OCR by tesseract.js · parser: Rust → WASM.
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
@@ -152,14 +153,18 @@ function bottomBand(canvas, grayscale, fraction = 0.42, upscale = 2) {
   return c;
 }
 
-let workerPromise = null;
-function getWorker() {
-  workerPromise ??= (async () => {
-    const worker = await Tesseract.createWorker('eng');
+// Two OCR models: 'mrz' is fine-tuned on the OCR-B font MRZs are printed in
+// (vendored, BSD-3-Clause © DoubangoTelecom — see tessdata/LICENSE); 'eng'
+// is the generic fallback from the tesseract.js CDN.
+const workers = {};
+function getWorker(lang) {
+  workers[lang] ??= (async () => {
+    const opts = lang === 'mrz' ? { langPath: './tessdata', gzip: false } : {};
+    const worker = await Tesseract.createWorker(lang, 1, opts);
     await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
     return worker;
   })();
-  return workerPromise;
+  return workers[lang];
 }
 
 function tryParse(text) {
@@ -174,21 +179,26 @@ async function scanImage(file) {
   const full = await toCanvas(bitmap);
   bitmap.close?.();
 
-  setStatus('Loading OCR engine (~2 MB, cached after first run)…');
-  const worker = await getWorker();
-
-  // Multiple OCR attempts — different preprocessing wins on different
-  // documents. Stop at the first checksum-VALID parse; remember the best
-  // parseable-but-invalid one as a fallback for the failure report.
+  // Multiple OCR attempts — the OCR-B-trained model first, then different
+  // preprocessing, then the generic model. Stop at the first checksum-VALID
+  // parse; remember the best parseable-but-invalid one for failure reporting.
   const attempts = [
-    ['Reading MRZ band…', () => bottomBand(full, false)],
-    ['Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
-    ['Scanning full image…', () => full],
+    ['mrz', 'Reading MRZ band (OCR-B model)…', () => bottomBand(full, false)],
+    ['mrz', 'Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
+    ['mrz', 'Scanning full image…', () => full],
+    ['eng', 'Retrying with the general model…', () => bottomBand(full, false)],
+    ['eng', 'Scanning full image (general model)…', () => full],
   ];
   let best = null;
   let bestRaw = null;
-  for (const [msg, makeCanvas] of attempts) {
+  for (const [lang, msg, makeCanvas] of attempts) {
     setStatus(msg);
+    let worker;
+    try {
+      worker = await getWorker(lang);
+    } catch {
+      continue; // model failed to load — try the next attempt
+    }
     const { data } = await worker.recognize(makeCanvas());
     const parsed = tryParse(data.text);
     if (parsed) {
