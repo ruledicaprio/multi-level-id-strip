@@ -130,8 +130,9 @@ async function toCanvas(bitmap, maxDim = 1600) {
   return c;
 }
 
-/** Crop the bottom band (where the MRZ lives), upscale and grayscale it. */
-function bottomBand(canvas, fraction = 0.42, upscale = 2) {
+/** Crop the bottom band (where the MRZ lives) and upscale it. Grayscale is
+ *  optional — it helps some scans but hurts guilloche-patterned cards. */
+function bottomBand(canvas, grayscale, fraction = 0.42, upscale = 2) {
   const srcY = Math.round(canvas.height * (1 - fraction));
   const c = document.createElement('canvas');
   c.width = canvas.width * upscale;
@@ -139,13 +140,15 @@ function bottomBand(canvas, fraction = 0.42, upscale = 2) {
   const ctx = c.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(canvas, 0, srcY, canvas.width, canvas.height - srcY, 0, 0, c.width, c.height);
-  const img = ctx.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    d[i] = d[i + 1] = d[i + 2] = y;
+  if (grayscale) {
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      d[i] = d[i + 1] = d[i + 2] = y;
+    }
+    ctx.putImageData(img, 0, 0);
   }
-  ctx.putImageData(img, 0, 0);
   return c;
 }
 
@@ -174,26 +177,36 @@ async function scanImage(file) {
   setStatus('Loading OCR engine (~2 MB, cached after first run)…');
   const worker = await getWorker();
 
-  // Attempt 1: the bottom band where the MRZ lives, upscaled + grayscale.
-  setStatus('Reading MRZ band…');
-  let { data } = await worker.recognize(bottomBand(full));
-  let parsed = tryParse(data.text);
-  let rawText = data.text;
-
-  // Attempt 2: the whole (downscaled) image.
-  if (!parsed) {
-    setStatus('MRZ band inconclusive — scanning full image…');
-    ({ data } = await worker.recognize(full));
-    parsed = tryParse(data.text);
-    rawText = data.text;
+  // Multiple OCR attempts — different preprocessing wins on different
+  // documents. Stop at the first checksum-VALID parse; remember the best
+  // parseable-but-invalid one as a fallback for the failure report.
+  const attempts = [
+    ['Reading MRZ band…', () => bottomBand(full, false)],
+    ['Retrying MRZ band in grayscale…', () => bottomBand(full, true)],
+    ['Scanning full image…', () => full],
+  ];
+  let best = null;
+  let bestRaw = null;
+  for (const [msg, makeCanvas] of attempts) {
+    setStatus(msg);
+    const { data } = await worker.recognize(makeCanvas());
+    const parsed = tryParse(data.text);
+    if (parsed) {
+      if (parsed.valid) {
+        setStatus('');
+        render(parsed, data.text);
+        return;
+      }
+      if (!best) { best = parsed; bestRaw = data.text; }
+    }
   }
 
-  if (!parsed) {
-    setStatus('No valid MRZ found. Try a sharper, straighter photo of the data page — or paste the MRZ text below.', true);
+  if (best) {
+    setStatus('MRZ found, but some check digits failed — bad read or tampered document. See details below.', true);
+    render(best, bestRaw);
     return;
   }
-  setStatus('');
-  render(parsed, rawText);
+  setStatus('No MRZ found. Try a sharper, straighter photo of the data page — or paste the MRZ text below.', true);
 }
 
 function chip(ok) {
