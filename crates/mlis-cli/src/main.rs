@@ -132,27 +132,12 @@ async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let inferer_addr =
-        env::var("MLIS_INFERER_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".into());
-    match mlis_pipeline::inferer::inferer_client::InfererClient::connect(inferer_addr.clone()).await
-    {
-        Ok(mut client) => {
-            match client
-                .health(mlis_pipeline::inferer::HealthRequest {})
-                .await
-            {
-                Ok(resp) => {
-                    let loaded = resp.into_inner().model_loaded;
-                    println!("✅ inferer reachable at {inferer_addr} (model_loaded: {loaded})");
-                }
-                Err(e) => {
-                    println!("❌ inferer at {inferer_addr} connected but Health RPC failed: {e}");
-                    ok = false;
-                }
-            }
-        }
+    let pipeline = Pipeline::from_env();
+    let infer_desc = pipeline.infer_describe();
+    match pipeline.infer_health().await {
+        Ok(status) => println!("✅ Tier-2 inferer ({infer_desc}): {status}"),
         Err(e) => {
-            println!("❌ inferer NOT reachable at {inferer_addr}: {e}");
+            println!("❌ Tier-2 inferer ({infer_desc}) NOT healthy: {e}");
             ok = false;
         }
     }

@@ -404,6 +404,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags 2.13.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.12.1",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.3",
+ "shlex 1.3.0",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -719,6 +739,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -797,6 +837,15 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "find_cuda_helper"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f9e65c593dd01ac77daad909ea4ad17f0d6d1776193fc8ea766356177abdad"
+dependencies = [
+ "glob",
+]
 
 [[package]]
 name = "fixedbitset"
@@ -1482,7 +1531,7 @@ version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da627c72b2499a8106f4dd33143843015e4a631f445d561f3481f7fba35b6151"
 dependencies = [
- "bindgen",
+ "bindgen 0.64.0",
  "pkg-config",
  "vcpkg",
 ]
@@ -1536,6 +1585,34 @@ name = "litemap"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+
+[[package]]
+name = "llama-cpp-2"
+version = "0.1.151"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36ead0925a19d754d5d13761ceb0f0fe49d36f8103c3596588ac1fb8911e5223"
+dependencies = [
+ "encoding_rs",
+ "enumflags2",
+ "llama-cpp-sys-2",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-core",
+]
+
+[[package]]
+name = "llama-cpp-sys-2"
+version = "0.1.151"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23c676b02f8f2bdd9d7df7bcca0bd176b27964440998e7aa31c6fe32552964d0"
+dependencies = [
+ "bindgen 0.72.1",
+ "cc",
+ "cmake",
+ "find_cuda_helper",
+ "glob",
+ "walkdir",
+]
 
 [[package]]
 name = "log"
@@ -1641,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64",
  "mlis-core",
@@ -1652,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -1662,12 +1739,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mlis-llm"
+version = "0.6.0"
+dependencies = [
+ "encoding_rs",
+ "llama-cpp-2",
+ "mlis-core",
+ "serde_json",
+]
+
+[[package]]
 name = "mlis-pipeline"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "docling_rs",
  "mlis-core",
+ "mlis-llm",
  "mrz",
  "ocr-daemon",
  "prost",
@@ -1680,7 +1768,7 @@ dependencies = [
 
 [[package]]
 name = "mlis-serve"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
@@ -1705,14 +1793,14 @@ dependencies = [
 
 [[package]]
 name = "mrz"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "mrz-wasm"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "mrz",
  "serde_json",
@@ -1884,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "ocr-daemon"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "image",
  "imageproc",
@@ -2993,7 +3081,7 @@ version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd33f6f216124cfaf0fa86c2c0cdf04da39b6257bd78c5e44fa4fa98c3a5857b"
 dependencies = [
- "bindgen",
+ "bindgen 0.64.0",
  "leptonica-sys",
  "pkg-config",
  "vcpkg",
@@ -3278,6 +3366,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
 ]
 
 [[package]]
@@ -3365,6 +3454,12 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"

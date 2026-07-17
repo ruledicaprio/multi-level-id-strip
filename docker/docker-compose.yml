@@ -50,6 +50,10 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:8080
       DOCLING_URL: http://docling:5001
+      # Pinned to the legacy gRPC sidecar (the `inferer` service above) for this
+      # release; the default backend is now `native` (in-process GGUF, see
+      # crates/mlis-llm). Drop this once the sidecar is retired.
+      MLIS_INFERER: grpc
       MLIS_INFERER_ADDR: http://inferer:50051
       MLIS_TOKEN: change-me-in-production
       # Optional Tier-3 hardening:

@@ -267,7 +267,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use mlis_pipeline::{DoclingEngine, Pipeline};
+    use mlis_pipeline::{DoclingEngine, GrpcInferer, Pipeline};
     use tower::ServiceExt;
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
     async fn extract_rejects_with_503_when_queue_is_full() {
         let pipeline = Pipeline::new(
             Box::new(DoclingEngine::new("http://localhost:5001")),
-            "http://127.0.0.1:50051",
+            Box::new(GrpcInferer::new("http://127.0.0.1:50051")),
         );
         // max_queue_depth: 0 means "full" even with zero in-flight requests —
         // exercises the rejection branch without needing a real inferer.
@@ -333,7 +333,7 @@ mod tests {
     fn state_with_token(token: Option<&str>) -> Arc<AppState> {
         let pipeline = Pipeline::new(
             Box::new(DoclingEngine::new("http://localhost:5001")),
-            "http://127.0.0.1:50051",
+            Box::new(GrpcInferer::new("http://127.0.0.1:50051")),
         );
         Arc::new(AppState {
             pipeline,

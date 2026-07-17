@@ -36,7 +36,7 @@ flowchart LR
     F -->|Markdown| E
     E --> T{"🔐 Tier 1<br/>ICAO 9303 checksums<br/>valid?"}
     T -->|"yes — deterministic,<br/>LLM skipped"| H[📦 .md + .json artifacts]
-    T -->|"no — fallback,<br/>🔒 mutex"| G["🧠 Tier 2 · gRPC (streamed)<br/>warm inferer<br/>Qwen 2.5 GGUF · GPU"]
+    T -->|"no — fallback,<br/>🔒 mutex"| G["🧠 Tier 2 · in-process<br/>llama.cpp (default)<br/>Qwen 2.5 GGUF"]
     G -->|"live progress via SSE<br/>(mlis-serve only)"| D
     G -->|strict JSON| H
 
@@ -90,27 +90,13 @@ docker run -d --name docling-serve -p 5001:5001 `
   ghcr.io/docling-project/docling-serve
 ```
 
-**2. Set up the Python inferer** (persistent Tier-2 sidecar):
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install ./python                             # CPU-only (grpcio, pydantic, llama-cpp-python)
-# or, with NVIDIA GPU acceleration (prebuilt CUDA 12.4 wheel):
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
-```
-
-**3. Download the model** (~1 GB, not tracked in git — only needed for this local/CLI path; the Docker path in step 6 downloads it automatically):
+**2. Download the model** (~1 GB, not tracked in git; the Docker path in step 4 downloads it automatically):
 ```powershell
 curl -L -o qwen2.5-1.5b-instruct-q4_k_m.gguf `
   https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
-**4. Start the inferer** (keeps the model warm; serves gRPC on `:50051`):
-```powershell
-cd python; python generate_grpc.py; python -m inferer; cd ..
-```
-
-**5. Run** (from the repo root):
+**3. Run** (from the repo root — Tier 2 runs the GGUF **in-process** by default, no separate inferer process to start):
 ```powershell
 # Preflight: checks OCR/inferer reachability and config before a real run
 cargo run -p mlis-cli -- doctor
@@ -127,8 +113,27 @@ cargo run -p mlis-serve
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
-**6. Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
-(OCR + warm inferer + web app; the `inferer` container auto-downloads and checksum-verifies the GGUF into `models/` on first start if it isn't already there).
+**4. Or bring the whole stack up with Docker:** `docker compose -f docker/docker-compose.yml up`
+(OCR + web app; the `inferer` sidecar container auto-downloads and checksum-verifies the GGUF into
+`models/` on first start. The compose file pins `MLIS_INFERER=grpc` on `serve` for this release —
+drop that env var to use the in-process native backend there too, once you've dropped the `inferer`
+service.)
+
+<details>
+<summary><b>Legacy: the Python gRPC sidecar</b> (feature <code>inferer-grpc</code>, kept as a fallback for one release)</summary>
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install ./python                             # CPU-only (grpcio, pydantic, llama-cpp-python)
+# or, with NVIDIA GPU acceleration (prebuilt CUDA 12.4 wheel):
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
+cd python; python generate_grpc.py; python -m inferer; cd ..   # serves gRPC on :50051
+```
+Then set `MLIS_INFERER=grpc` (and `MLIS_INFERER_ADDR` if not on `127.0.0.1:50051`) before running the
+CLI or `mlis-serve`.
+</details>
 
 ### Configuration (environment)
 
@@ -136,14 +141,17 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 | --- | --- | --- |
 | `MLIS_OCR_ENGINE` | `docling` | `docling` (all platforms) or `native` (Linux/WSL Tesseract, `--features native-ocr`) |
 | `DOCLING_URL` | `http://localhost:5001` | docling-serve OCR endpoint |
-| `MLIS_INFERER_ADDR` | `http://127.0.0.1:50051` | gRPC inferer endpoint |
+| `MLIS_INFERER` | `native` | Tier-2 backend: `native` (in-process llama.cpp, default) or `grpc` (legacy Python sidecar) |
+| `MLIS_MODEL_PATH` | `./qwen2.5-1.5b-instruct-q4_k_m.gguf` | GGUF path, `native` backend only |
+| `MLIS_MODEL_SHA256` / `MLIS_MODEL_SKIP_VERIFY` | *(built-in hash)* / *(unset)* | override the expected model checksum, or skip verification |
+| `MLIS_INFERER_ADDR` | `http://127.0.0.1:50051` | gRPC inferer endpoint, `grpc` backend only |
 | `MLIS_MAX_QUEUE_DEPTH` | `4` | `mlis-serve`: reject uploads with 503 once this many Tier-2 requests are queued/in-flight |
 | `MLIS_TOKEN` | *(unset)* | require `Authorization: Bearer <token>`; **mandatory for non-loopback `BIND_ADDR`** |
 | `MLIS_TLS_CERT` / `MLIS_TLS_KEY` | *(unset)* | enable rustls TLS on `mlis-serve` |
 | `MLIS_AUDIT_LOG` | *(unset)* | append PII-free SHA-256 audit records (JSONL) |
 | `MLIS_KEY` | *(unset)* | base64 32-byte AES-256 key → encrypt output to `<input>.json.enc` (`mlis decrypt` to read) |
 
-> **Windows note:** the pre-compiled CUDA `llama-cpp-python` bindings require the Microsoft Visual C++ Redistributable. The native OCR engine (`ocr-daemon`) is Linux/WSL-only.
+> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The native OCR engine (`ocr-daemon`) is Linux/WSL-only.
 
 ## 📁 Repository Layout
 
@@ -153,13 +161,15 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 │   │                  repair, date-plausibility, ISO/ICAO country names
 │   ├── mrz-wasm/      wasm-bindgen wrapper for the browser demo
 │   ├── mlis-core/     Canonical Extraction schema + Tier-3 audit/crypto helpers
-│   ├── mlis-pipeline/ OCR engine trait → Tier 1 MRZ → Tier 2 gRPC inferer → JSON
+│   ├── mlis-llm/      In-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`, ChatML
+│   │                  prompting, JSON repair, model integrity check
+│   ├── mlis-pipeline/ OCR engine trait → Tier 1 MRZ → Tier 2 InferBackend (native | gRPC) → JSON
 │   ├── mlis-cli/      CLI front-end (binary `mlis`; also `mlis decrypt`)
 │   ├── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
 │   │                  bearer auth + TLS
 │   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only)
-├── proto/            inferer.proto — the gRPC contract shared by Rust + Python
-├── python/inferer/   Persistent warm LLM sidecar (grpcio, Qwen GGUF via llama.cpp)
+├── proto/            inferer.proto — the gRPC contract for the legacy Python sidecar backend
+├── python/inferer/   Legacy Tier-2 sidecar (grpcio, Qwen GGUF via llama.cpp) — one-release fallback
 ├── docker/           Dockerfiles + docker-compose.yml (OCR + inferer + web)
 ├── web/              GitHub Pages demo site (static, client-side only)
 ├── samples/          Public-domain specimen documents + example outputs

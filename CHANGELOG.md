@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-17
+
+Native Tier-2 inference: the Qwen GGUF now runs in-process via `llama-cpp-2`, no Python sidecar
+required. First step on the road to a single static musl binary — the legacy gRPC path stays as a
+one-release fallback while the pure-Rust OCR and licensing milestones land.
+
+### Added
+- **`mlis-llm`** (new crate): loads and runs the Qwen2.5 GGUF in-process via `llama-cpp-2`, ChatML
+  prompting, deterministic (temp-0, greedy) sampling, and JSON repair/parsing ported from
+  `python/inferer/{prompts,adapter}.py`. SHA-256 model integrity check (`MLIS_MODEL_SHA256` override,
+  `MLIS_MODEL_SKIP_VERIFY=1` to bypass) reusing `mlis_core::audit::sha256_hex`.
+- **`InferBackend` trait** (`mlis-pipeline`): the Tier-2 seam is now pluggable — `NativeInferer`
+  (feature `inferer-native`, **default**) wraps `mlis-llm`; `GrpcInferer` (feature `inferer-grpc`,
+  still default this release) is the existing Python sidecar path, scheduled for removal once the
+  pure-Rust OCR milestone lands and the sidecar has no remaining reason to exist. Selected at runtime
+  via `MLIS_INFERER=native|grpc` (defaults to `native` when compiled in). Concurrency control (the
+  single-flight semaphore + queue-depth counter) stays centralized in `Pipeline`, backend-agnostic.
+- **Field-accuracy parity harness** (`crates/mlis-llm/tests/parity.rs`, `--ignored`): runs the native
+  backend against `samples/*.md` and compares against the deterministic-MRZ ground truth in the
+  matching `samples/*.json`, asserting a floor on the per-field match rate as a regression guard (not
+  an accuracy gate — a 1.5B model reading OCR'd Markdown won't hit 100%, and Tier 1 exists precisely
+  for the documents where it wouldn't need to).
+- **CI**: `inferer-native`/`inferer-grpc` feature-combination build checks on every push; an opt-in
+  `native-llm` job (`workflow_dispatch`) downloads the real GGUF and runs the e2e smoke test plus the
+  parity harness.
+
+### Changed
+- `mlis doctor` now reports Tier-2 health via `Pipeline::infer_describe()`/`infer_health()` instead of
+  hardcoding a gRPC `Health` RPC call — works against whichever backend is active.
+- `docker/docker-compose.yml`'s `serve` service pins `MLIS_INFERER=grpc` for this release, so the
+  existing `inferer` sidecar container keeps being used by default until compose gains a native
+  profile.
+
 ## [0.5.1] — 2026-07-17
 
 Bounded, observable inference queue — plus a safety gap the redesign surfaced.
