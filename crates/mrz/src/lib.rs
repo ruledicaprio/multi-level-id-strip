@@ -1,0 +1,341 @@
+//! ICAO 9303 Machine Readable Zone parser with check-digit validation.
+//!
+//! Zero runtime dependencies so it compiles to native and `wasm32-unknown-unknown`
+//! targets alike. Supports:
+//! - **TD3** (passports): 2 lines × 44 characters
+//! - **TD2** (official travel documents / ID cards): 2 lines × 36 characters
+//! - **TD1** (ID cards): 3 lines × 30 characters
+//!
+//! Check digits use the standard 7-3-1 weighting over the value mapping
+//! `0-9 → 0-9`, `A-Z → 10-35`, `< → 0`. A field checksum that validates
+//! mathematically proves the OCR read is faithful to the printed document —
+//! no probabilistic model involved.
+//!
+//! The engine is split across modules:
+//! - [`checksum`] — check-digit math and generic OCR-repair primitives
+//! - [`parser`] — the TD1/TD2/TD3 parsers and the free-text scanner
+//! - [`dates`] — `YYMMDD` expansion and date-plausibility checks
+//! - [`countries`] — ICAO/ISO 3166-1 code → country name
+//!
+//! A valid composite check digit proves a faithful *read*; it does not prove
+//! the document is in date — see [`MrzData::validity`].
+
+#[cfg(feature = "serde")]
+use serde::Serialize;
+
+mod checksum;
+mod countries;
+mod dates;
+mod parser;
+
+pub use checksum::{check_digit, verify};
+pub use countries::country_name;
+pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
+pub use parser::{find_and_parse, parse_td1, parse_td2, parse_td3};
+
+/// Per-field check-digit verification results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct Checks {
+    pub document_number: bool,
+    pub date_of_birth: bool,
+    pub date_of_expiry: bool,
+    /// TD3 only; `true` for TD1/TD2 (no such check digit exists there).
+    pub personal_number: bool,
+    /// The composite check digit over the whole zone.
+    pub composite: bool,
+}
+
+impl Checks {
+    /// All check digits valid — the MRZ read is mathematically verified.
+    pub fn all_valid(&self) -> bool {
+        self.document_number
+            && self.date_of_birth
+            && self.date_of_expiry
+            && self.personal_number
+            && self.composite
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub enum Format {
+    Td3,
+    Td2,
+    Td1,
+}
+
+/// Parsed and validated MRZ data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct MrzData {
+    pub format: Format,
+    /// Document code, e.g. "P" (passport), "ID"/"I" (identity card).
+    pub document_type: String,
+    /// Issuing state or organization (3-letter ICAO code).
+    pub issuing_country: String,
+    pub document_number: String,
+    pub surname: String,
+    pub given_names: String,
+    /// Nationality (3-letter ICAO code).
+    pub nationality: String,
+    /// ISO 8601 (`YYYY-MM-DD`), century inferred (see [`expand_date`]).
+    pub date_of_birth: String,
+    /// "M", "F" or "X" (unspecified).
+    pub sex: String,
+    /// ISO 8601 (`YYYY-MM-DD`).
+    pub date_of_expiry: String,
+    /// TD3: personal number field. TD1: optional data 1 + 2 joined.
+    /// TD2: optional data field.
+    pub personal_number: Option<String>,
+    /// The raw MRZ lines, newline-joined, exactly as validated.
+    pub mrz_lines: String,
+    pub checks: Checks,
+}
+
+impl MrzData {
+    /// Shorthand for `checks.all_valid()`.
+    pub fn valid(&self) -> bool {
+        self.checks.all_valid()
+    }
+
+    /// Human-readable name of the issuing state, if the code is recognized.
+    pub fn issuing_country_name(&self) -> Option<&'static str> {
+        country_name(&self.issuing_country)
+    }
+
+    /// Human-readable name of the nationality, if the code is recognized.
+    pub fn nationality_name(&self) -> Option<&'static str> {
+        country_name(&self.nationality)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MrzError {
+    /// Line has the wrong length for the claimed format.
+    BadLength { expected: usize, got: usize },
+    /// Character outside `[A-Z0-9<]`.
+    BadCharacter(char),
+    /// Document code not recognized for the format.
+    BadDocumentCode(String),
+    /// No plausible MRZ found in the supplied text.
+    NotFound,
+}
+
+impl core::fmt::Display for MrzError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BadLength { expected, got } => {
+                write!(f, "bad MRZ line length: expected {expected}, got {got}")
+            }
+            Self::BadCharacter(c) => write!(f, "invalid MRZ character: {c:?}"),
+            Self::BadDocumentCode(c) => write!(f, "unrecognized document code: {c:?}"),
+            Self::NotFound => write!(f, "no MRZ found in text"),
+        }
+    }
+}
+
+impl std::error::Error for MrzError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Official ICAO 9303 part 4 specimen (Utopia / Anna Maria Eriksson).
+    const TD3_L1: &str = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+    const TD3_L2: &str = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
+
+    #[test]
+    fn td3_specimen_fully_valid() {
+        let d = parse_td3(TD3_L1, TD3_L2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_type, "P");
+        assert_eq!(d.issuing_country, "UTO");
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.given_names, "ANNA MARIA");
+        assert_eq!(d.document_number, "L898902C3");
+        assert_eq!(d.nationality, "UTO");
+        assert_eq!(d.date_of_birth, "1974-08-12");
+        assert_eq!(d.sex, "F");
+        assert_eq!(d.date_of_expiry, "2012-04-15");
+        assert_eq!(d.personal_number.as_deref(), Some("ZE184226B"));
+    }
+
+    #[test]
+    fn td3_tampered_dob_fails_checksum() {
+        // Change one digit of the date of birth: 740812 → 750812.
+        let tampered = TD3_L2.replacen("740812", "750812", 1);
+        let d = parse_td3(TD3_L1, &tampered).unwrap();
+        assert!(!d.checks.date_of_birth);
+        assert!(!d.checks.composite);
+        assert!(!d.valid());
+    }
+
+    #[test]
+    fn td3_empty_personal_number_with_filler_check() {
+        // Personal number all fillers and check digit '<' is valid (value 0).
+        let l2 = "L898902C36UTO7408122F1204159<<<<<<<<<<<<<<06";
+        let d = parse_td3(TD3_L1, l2).unwrap();
+        assert!(d.checks.personal_number);
+        assert_eq!(d.personal_number, None);
+    }
+
+    // Official ICAO 9303 part 5 TD1 specimen.
+    const TD1_L1: &str = "I<UTOD231458907<<<<<<<<<<<<<<<";
+    const TD1_L2: &str = "7408122F1204159UTO<<<<<<<<<<<6";
+    const TD1_L3: &str = "ERIKSSON<<ANNA<MARIA<<<<<<<<<<";
+
+    #[test]
+    fn td1_specimen_fully_valid() {
+        let d = parse_td1(TD1_L1, TD1_L2, TD1_L3).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::Td1);
+        assert_eq!(d.document_type, "I");
+        assert_eq!(d.document_number, "D23145890");
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.given_names, "ANNA MARIA");
+        assert_eq!(d.date_of_birth, "1974-08-12");
+        assert_eq!(d.date_of_expiry, "2012-04-15");
+    }
+
+    // Official ICAO 9303 part 6 TD2 specimen (Utopia / Anna Maria Eriksson).
+    const TD2_L1: &str = "I<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<";
+    const TD2_L2: &str = "D231458907UTO7408122F1204159<<<<<<<6";
+
+    #[test]
+    fn td2_specimen_fully_valid() {
+        let d = parse_td2(TD2_L1, TD2_L2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::Td2);
+        assert_eq!(d.document_type, "I");
+        assert_eq!(d.issuing_country, "UTO");
+        assert_eq!(d.document_number, "D23145890");
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.given_names, "ANNA MARIA");
+        assert_eq!(d.nationality, "UTO");
+        assert_eq!(d.date_of_birth, "1974-08-12");
+        assert_eq!(d.sex, "F");
+        assert_eq!(d.date_of_expiry, "2012-04-15");
+    }
+
+    #[test]
+    fn td2_tampered_expiry_fails_checksum() {
+        let tampered = TD2_L2.replacen("120415", "120416", 1);
+        let d = parse_td2(TD2_L1, &tampered).unwrap();
+        assert!(!d.checks.date_of_expiry);
+        assert!(!d.checks.composite);
+        assert!(!d.valid());
+    }
+
+    #[test]
+    fn td2_found_in_ocr_text() {
+        let text = format!("## IDENTITY CARD\n\nnoise\n\n{TD2_L1}\n{TD2_L2}\n\nfooter");
+        let d = find_and_parse(&text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::Td2);
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.document_number, "D23145890");
+    }
+
+    #[test]
+    fn find_in_ocr_noise() {
+        let text = format!(
+            "## REPUBLIC OF UTOPIA\n\nSome OCR noise here\n\n{}\n{}\n\nfooter",
+            // OCR quirks: lowercase, stray spaces, « for <<, dropped fillers.
+            "p<utoeriksson«anna<maria<<<<<<<<<<<<<<<<<",
+            "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+        );
+        let d = find_and_parse(&text).unwrap();
+        assert!(d.valid());
+        assert_eq!(d.surname, "ERIKSSON");
+    }
+
+    #[test]
+    fn find_html_escaped_and_merged_lines() {
+        // Real docling output shape: fillers escaped as &lt; and both TD3
+        // lines on one physical markdown line (Croatian specimen).
+        let text = "## PUTOVNICA\n\nP&lt;HRVSPECIMEN&lt;&lt;SPECIMEN&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt; 0070070071HRV8212258F1407019&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;06\n";
+        let d = find_and_parse(text).unwrap();
+        assert_eq!(d.surname, "SPECIMEN");
+        assert_eq!(d.document_number, "007007007");
+        assert_eq!(d.issuing_country, "HRV");
+        assert!(d.checks.document_number);
+        assert!(d.checks.date_of_birth);
+        assert!(d.checks.date_of_expiry);
+    }
+
+    #[test]
+    fn checksum_verified_ocr_repair() {
+        // Verbatim tesseract.js output for the Croatian specimen at low
+        // resolution: trailing fillers read as K/L runs, a hallucinated
+        // leading '1' on line 2 (45 chars), and 'B' where '8' is printed.
+        // The check digits prove which repaired variant is the true read.
+        let text = "I 01072009 PUJZAGREB 0\n\nBIDFD WH5SS A 2\n\n01072014\nP<HRVSPECIMEN<<SPECIMEN<KLLLLLLLLLLLLLLLLLKLKL\n10070070071HRVB212258F1407019<<<<<<<<<<<<<<06\n";
+        let d = find_and_parse(text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.surname, "SPECIMEN");
+        assert_eq!(d.given_names, "SPECIMEN");
+        assert_eq!(d.document_number, "007007007");
+        assert_eq!(d.date_of_birth, "1982-12-25");
+    }
+
+    #[test]
+    fn ocr_repair_dropped_filler_mid_line() {
+        // Second verbatim tesseract.js reading of the same specimen: an
+        // L-run inside the personal-number field and one filler DROPPED
+        // (43 chars) — the missing character must be re-inserted inside the
+        // filler run, not appended, or the check digits shift.
+        let text = "RF 01072009 PUZAGREB\n01072014\nP<HRVSPECIMEN<<SPECIMEN<<K<KLLLLLLLLLLLLLLLLKLKL\n0070070071HRVB212258F1407019<<<<LLLLLLL<<06\n";
+        let d = find_and_parse(text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.surname, "SPECIMEN");
+        assert_eq!(d.document_number, "007007007");
+        assert_eq!(d.personal_number, None);
+    }
+
+    #[test]
+    fn td1_from_single_docling_line_with_k_misreads() {
+        // Verbatim docling OCR of the Slovenian 2022 specimen ID card rear:
+        // all three TD1 lines in ONE paragraph, `<` escaped as &lt;, and the
+        // usual K-for-filler misreads (IK→I<, 145K<→145<<, VZORECKK→VZOREC<<).
+        let text = "1F9874543\n\nIKSVNIE987654302806985505145K&lt; 8506287F3203282SVN&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;2 VZORECKKJANAKKKKKKKKK&lt;&lt;KK";
+        let d = find_and_parse(text).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::Td1);
+        assert_eq!(d.document_type, "I");
+        assert_eq!(d.issuing_country, "SVN");
+        assert_eq!(d.document_number, "IE9876543");
+        assert_eq!(d.surname, "VZOREC");
+        assert_eq!(d.given_names, "JANA");
+        assert_eq!(d.date_of_birth, "1985-06-28");
+        assert_eq!(d.date_of_expiry, "2032-03-28");
+        // The trailing K in the EMŠO field is a filler misread that check
+        // digits cannot catch (K ≡ < mod 10) — heuristic cleanup handles it.
+        assert_eq!(d.personal_number.as_deref(), Some("2806985505145"));
+    }
+
+    #[test]
+    fn invalid_checksums_still_reported() {
+        // A tampered MRZ parses but is flagged invalid rather than dropped.
+        let tampered = TD3_L2.replacen("740812", "750812", 1);
+        let text = format!("{TD3_L1}\n{tampered}");
+        let d = find_and_parse(&text).unwrap();
+        assert!(!d.valid());
+        assert!(!d.checks.date_of_birth);
+    }
+
+    #[test]
+    fn find_nothing_in_plain_text() {
+        assert_eq!(
+            find_and_parse("just a regular paragraph\nwith two lines"),
+            Err(MrzError::NotFound)
+        );
+    }
+
+    #[test]
+    fn country_names_surface_on_mrzdata() {
+        let d = parse_td1(TD1_L1, TD1_L2, TD1_L3).unwrap();
+        assert_eq!(d.issuing_country_name(), Some("Utopia (ICAO specimen)"));
+        assert_eq!(d.nationality_name(), Some("Utopia (ICAO specimen)"));
+    }
+}

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (Linux, incl. native OCR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake protobuf-compiler pkg-config clang libclang-dev \
+            libtesseract-dev libleptonica-dev tesseract-ocr tesseract-ocr-eng
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (workspace, all targets)
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test (workspace, includes ocr-daemon)
+        run: cargo test --workspace
+
+      - name: Build with the native OCR engine
+        run: cargo build -p mlis-pipeline --features native-ocr
+
+  # Cross-platform crates only (no native ocr-daemon / no system OCR libs).
+  rust-portable:
+    name: Rust (${{ matrix.os }}, default members)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install protobuf + cmake
+        run: brew install protobuf cmake
+      - uses: Swatinem/rust-cache@v2
+      - name: Test default members (excludes ocr-daemon)
+        run: cargo test
+
+  python:
+    name: Python inferer (gRPC smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install "grpcio>=1.60" "grpcio-tools>=1.60" "pydantic>=2.5" "protobuf>=4.25"
+      - name: Generate stubs + smoke test
+        working-directory: python
+        run: |
+          python generate_grpc.py
+          python smoke_test.py

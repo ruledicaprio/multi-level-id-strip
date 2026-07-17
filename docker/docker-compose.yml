@@ -1,0 +1,53 @@
+# Full mlis stack: OCR (docling-serve, CPU) + LLM inferer (gRPC, GPU) + web app.
+# The deliberate CPU/GPU split keeps a small-VRAM card from OOM-ing (see
+# docs/ARCHITECTURE.md). Run from the repo root: `docker compose -f docker/docker-compose.yml up`.
+name: mlis
+
+services:
+  # Tier-0 OCR: containerized docling-serve (prebuilt image), pinned to the CPU.
+  docling:
+    image: ghcr.io/docling-project/docling-serve
+    environment:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+    ports:
+      - "5001:5001"
+
+  # Tier-2 LLM: persistent warm inferer over gRPC. Mount the GGUF model dir.
+  inferer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.inferer
+    volumes:
+      - ../models:/models:ro
+    environment:
+      MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+      MLIS_INFERER_BIND: 0.0.0.0:50051
+    ports:
+      - "50051:50051"
+    # GPU passthrough (optional; requires the NVIDIA container runtime):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+
+  # Web app: Tier 1 (deterministic MRZ) + Tier 2 fallback. Bearer-auth required
+  # because it binds non-loopback (change MLIS_TOKEN before exposing it).
+  serve:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.serve
+    depends_on:
+      - docling
+      - inferer
+    environment:
+      BIND_ADDR: 0.0.0.0:8080
+      DOCLING_URL: http://docling:5001
+      MLIS_INFERER_ADDR: http://inferer:50051
+      MLIS_TOKEN: change-me-in-production
+      # Optional Tier-3 hardening:
+      # MLIS_AUDIT_LOG: /data/audit.jsonl
+      # MLIS_KEY: <base64 32-byte AES-256 key>
+    ports:
+      - "8080:8080"

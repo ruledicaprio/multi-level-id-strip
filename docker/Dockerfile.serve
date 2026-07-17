@@ -1,0 +1,24 @@
+# mlis-serve — axum web app (Tier 1 MRZ + Tier 2 gRPC inferer), docling OCR.
+# Multi-stage: build with the full toolchain, ship a slim runtime.
+#
+# This image uses the docling-serve OCR engine (default). The native Tesseract
+# engine (`--features native-ocr`) needs libtesseract/libleptonica in BOTH the
+# build and runtime stages and is Linux-only; see crates/ocr-daemon.
+
+FROM rust:1.96 AS build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake protobuf-compiler \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p mlis-serve
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/mlis-serve /usr/local/bin/mlis-serve
+# Container bind is non-loopback, so MLIS_TOKEN is required (set in compose).
+ENV BIND_ADDR=0.0.0.0:8080
+EXPOSE 8080
+CMD ["mlis-serve"]

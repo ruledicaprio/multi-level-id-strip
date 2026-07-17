@@ -1,11 +1,42 @@
 [workspace]
 resolver = "2"
-members = ["mrz", "mrz-wasm", "pipeline", "docling-client", "docling-app"]
+members = [
+    "crates/mrz",
+    "crates/mrz-wasm",
+    "crates/mlis-core",
+    "crates/mlis-pipeline",
+    "crates/mlis-cli",
+    "crates/mlis-serve",
+    "crates/ocr-daemon",
+]
+# ocr-daemon links system libtesseract/libleptonica (Linux/WSL only), so it is
+# NOT in the default set. Portable/Windows builds use `cargo build` (default
+# members); Linux builds the native engine with `cargo build --workspace` or
+# `cargo build -p ocr-daemon` (+ `-p mlis-pipeline --features native-ocr`).
+default-members = [
+    "crates/mrz",
+    "crates/mrz-wasm",
+    "crates/mlis-core",
+    "crates/mlis-pipeline",
+    "crates/mlis-cli",
+    "crates/mlis-serve",
+]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
+authors = ["Rusmir Skopljak <rusmirskopljak@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/ruledicaprio/multi-level-id-strip"
+description = "Air-gapped, multi-level identity-document extraction: deterministic ICAO 9303 MRZ validation with a local LLM fallback — zero cloud calls."
 
 [workspace.dependencies]
 docling_rs = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# Release builds: fat LTO + single codegen unit for smaller, faster binaries
+# (the WASM demo payload and the CLI/serve binaries both benefit).
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

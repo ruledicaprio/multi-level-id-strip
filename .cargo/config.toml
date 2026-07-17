@@ -1,0 +1,8 @@
+# Workspace-wide cargo configuration.
+#
+# Release optimizations live in the root Cargo.toml `[profile.release]`
+# (lto = true, codegen-units = 1, strip = true). This file is the place for
+# build/target tweaks; kept minimal so builds stay reproducible.
+
+[net]
+git-fetch-with-cli = true

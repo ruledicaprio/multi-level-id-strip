@@ -32,13 +32,13 @@ jobs:
         run: cargo test -p mrz
 
       - name: Build WASM package
-        run: wasm-pack build mrz-wasm --target web --release --no-typescript
+        run: wasm-pack build crates/mrz-wasm --target web --release --no-typescript
 
       - name: Assemble site
         run: |
           mkdir -p _site/pkg
           cp -r web/* _site/
-          cp mrz-wasm/pkg/mrz_wasm.js mrz-wasm/pkg/mrz_wasm_bg.wasm _site/pkg/
+          cp crates/mrz-wasm/pkg/mrz_wasm.js crates/mrz-wasm/pkg/mrz_wasm_bg.wasm _site/pkg/
 
       - uses: actions/upload-pages-artifact@v3
         with:

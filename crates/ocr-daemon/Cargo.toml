@@ -1,0 +1,11 @@
+[package]
+name = "ocr-daemon"
+version.workspace = true
+edition.workspace = true
+# Linux/WSL only: links system libtesseract + libleptonica. Exclude from
+# Windows/macOS builds (build the cross-platform crates explicitly instead).
+
+[dependencies]
+leptess = "0.14"
+image = "0.25"
+thiserror = "2"

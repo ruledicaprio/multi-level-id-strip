@@ -1,3 +1,11 @@
+> ⚠️ **Historical / inspiration doc.** This is a DeepSeek *simulated reconstruction* — an
+> aspirational read of the project, not a description of the real code. Several things it invents
+> (a native `ocr-daemon`, a `core-types` crate, ZeroMQ IPC, a FastAPI+Transformers server) never
+> existed. The v0.4.0 build adopted its *intent* while grounding every decision in the actual
+> codebase — see **[ARCHITECTURE.md](ARCHITECTURE.md)** for what was really built (and where it
+> deliberately diverges: docling-serve kept as default OCR with a Linux-only native engine beside
+> it, gRPC instead of ZeroMQ, llama.cpp kept instead of Transformers).
+
 ### 📁 MLIS (multi-level-id-strip) repository Topography & File Tree (Simulated Reconstruction)
 Based on the dependency graph and commit structure, the repo breaks down into a **Rust workspace** with a **Python sidecar** and a **WASM target**.
 

@@ -1,0 +1,27 @@
+[package]
+name = "mlis-pipeline"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mrz = { path = "../mrz", features = ["serde"] }
+mlis-core = { path = "../mlis-core", features = ["security"] }
+docling_rs = { workspace = true }
+tokio = { workspace = true, features = ["fs", "sync", "rt"] }
+serde_json = "1"
+tonic = "0.12"
+prost = "0.13"
+async-trait = "0.1"
+# Native Tesseract+Leptonica OCR engine — Linux/WSL only, opt-in.
+ocr-daemon = { path = "../ocr-daemon", optional = true }
+
+[features]
+# Compile in the native OCR engine (requires libtesseract/libleptonica; Linux/WSL).
+native-ocr = ["dep:ocr-daemon"]
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-stream = { version = "0.1", features = ["net"] }
