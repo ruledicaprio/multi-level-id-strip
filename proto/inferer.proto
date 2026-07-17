@@ -9,6 +9,10 @@ service Inferer {
   // Extract structured fields from OCR Markdown (Tier 2 fallback, used only
   // when no checksum-valid MRZ exists). The model is loaded once and kept warm.
   rpc Extract(ExtractRequest) returns (ExtractResponse);
+  // Streaming variant of Extract: yields incremental text deltas as the model
+  // generates, then one final chunk carrying the validated result. Lets a
+  // client (mlis-serve) render progress instead of freezing during Tier 2.
+  rpc ExtractStream(ExtractRequest) returns (stream ExtractChunk);
   // Liveness/readiness: is the model loaded and ready to serve?
   rpc Health(HealthRequest) returns (HealthReply);
 }
@@ -36,6 +40,14 @@ message ExtractResponse {
   optional string personal_number = 10;
   optional string mrz_line = 11;
   string raw_json = 12;
+}
+
+// One chunk of a streaming Extract response. Every chunk but the last carries
+// a non-empty `delta`; the final chunk sets `done` and `result`.
+message ExtractChunk {
+  string delta = 1;
+  bool done = 2;
+  ExtractResponse result = 3;
 }
 
 message HealthRequest {}

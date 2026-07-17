@@ -103,3 +103,71 @@ async fn rust_client_round_trips_with_real_python_inferer() {
         "mock mode should report model_loaded=true"
     );
 }
+
+#[tokio::test]
+#[ignore = "spawns a real python process; needs the inferer's gRPC deps + \
+            generated stubs — see python/pyproject.toml and generate_grpc.py, \
+            or run CI's `bridge` job"]
+async fn rust_client_streams_from_real_python_inferer() {
+    let bind = "127.0.0.1:50198";
+    let child = Command::new(python_exe())
+        .args(["-m", "inferer"])
+        .current_dir(python_dir())
+        .env("MLIS_INFERER_MOCK", "1")
+        .env("MLIS_INFERER_BIND", bind)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `python -m inferer`");
+    let _guard = InfererGuard(child);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if tokio::net::TcpStream::connect(bind).await.is_ok() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "python inferer did not start listening on {bind} within 15s"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let mut client = InfererClient::connect(format!("http://{bind}"))
+        .await
+        .expect("connect to the real python inferer over gRPC");
+
+    let mut stream = client
+        .extract_stream(ExtractRequest {
+            markdown: "P<UTO passport specimen".into(),
+            image_roi: Vec::new(),
+        })
+        .await
+        .expect("ExtractStream RPC to the real python inferer")
+        .into_inner();
+
+    let mut deltas = Vec::new();
+    let mut final_result = None;
+    while let Some(chunk) = stream
+        .message()
+        .await
+        .expect("ExtractStream chunk from the real python inferer")
+    {
+        if chunk.done {
+            final_result = chunk.result;
+            break;
+        }
+        assert!(!chunk.delta.is_empty(), "expected a non-empty delta chunk");
+        deltas.push(chunk.delta);
+    }
+
+    assert!(
+        !deltas.is_empty(),
+        "expected at least one delta chunk before the final result"
+    );
+    let result = final_result.expect("final chunk should carry a result");
+    assert_eq!(result.surname.as_deref(), Some("MOCK"));
+    assert_eq!(result.document_number.as_deref(), Some("M0"));
+    assert!(result.raw_json.contains("\"extraction_method\""));
+    assert!(result.raw_json.contains("\"llm\""));
+}

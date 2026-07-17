@@ -11,13 +11,17 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
     middleware::{self, Next},
-    response::{Html, Json, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, Json, Response,
+    },
     routing::{get, post},
     Router,
 };
-use mlis_pipeline::{Pipeline, PipelineError};
+use mlis_pipeline::{Pipeline, ProcessEvent};
 use serde_json::{json, Value};
-use std::{env, path::PathBuf, sync::Arc};
+use std::{convert::Infallible, env, path::PathBuf, sync::Arc};
+use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
 const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024; // 20 MB
@@ -150,7 +154,7 @@ async fn index() -> Html<&'static str> {
 async fn extract(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     // Take the first uploaded file field.
     let (filename, data) = loop {
         let field = multipart
@@ -183,31 +187,48 @@ async fn extract(
         .await
         .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let result = state.pipeline.process_document(&upload_path).await;
+    // Drive the pipeline in the background, forwarding events to the SSE
+    // stream as they arrive so the browser sees Tier-2 progress instead of a
+    // single blocking response.
+    let (tx, rx) = tokio::sync::mpsc::channel::<ProcessEvent>(16);
+    let bg_state = state.clone();
+    let bg_upload_path = upload_path.clone();
+    tokio::spawn(async move {
+        bg_state
+            .pipeline
+            .process_document_stream(&bg_upload_path, tx)
+            .await;
+    });
 
-    let response = match &result {
-        Ok(r) => {
-            let resp = json!({
-                "filename": filename,
-                "markdown": r.markdown,
-                "extracted": r.extracted,
-                "method": r.method.as_str(),
-                "mrz": r.mrz.as_ref().map(|m| serde_json::to_value(m).expect("MrzData serializes")),
-                "error": r.llm_error,
-            });
-            cleanup(&state, &[&upload_path, &r.md_path, &r.json_path]).await;
-            Ok(Json(resp))
-        }
-        Err(e) => {
-            cleanup(&state, &[&upload_path]).await;
-            let status = match e {
-                PipelineError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                _ => StatusCode::BAD_GATEWAY,
+    let stream = ReceiverStream::new(rx).then(move |event| {
+        let state = state.clone();
+        let filename = filename.clone();
+        let upload_path = upload_path.clone();
+        async move {
+            let sse_event = match event {
+                ProcessEvent::Delta(text) => Event::default().event("delta").data(text),
+                ProcessEvent::Done(result) => {
+                    let resp = json!({
+                        "filename": filename,
+                        "markdown": result.markdown,
+                        "extracted": result.extracted,
+                        "method": result.method.as_str(),
+                        "mrz": result.mrz.as_ref().map(|m| serde_json::to_value(m).expect("MrzData serializes")),
+                        "error": result.llm_error,
+                    });
+                    cleanup(&state, &[&upload_path, &result.md_path, &result.json_path]).await;
+                    Event::default().event("result").data(resp.to_string())
+                }
+                ProcessEvent::Failed(msg) => {
+                    cleanup(&state, &[&upload_path]).await;
+                    Event::default().event("error").data(msg)
+                }
             };
-            Err(api_error(status, e))
+            Ok::<_, Infallible>(sse_event)
         }
-    };
-    response
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// Best-effort removal of working files (PII hygiene). Set KEEP_WORK=1 to keep

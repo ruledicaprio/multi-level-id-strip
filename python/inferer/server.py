@@ -23,6 +23,20 @@ from .schemas import Extraction
 MOCK = os.environ.get("MLIS_INFERER_MOCK") == "1"
 
 
+def _finalize(data: dict) -> pb.ExtractResponse:
+    """Validate/normalize `data` through the shared schema, stamp the method,
+    and build the wire response. Shared by `Extract` and `ExtractStream`."""
+    model = Extraction(**data)
+    model.extraction_method = "llm"
+
+    resp = pb.ExtractResponse(raw_json=model.model_dump_json())
+    for field in Extraction.TYPED_FIELDS:
+        value = getattr(model, field, None)
+        if value is not None:
+            setattr(resp, field, value)
+    return resp
+
+
 class InfererServicer(pb_grpc.InfererServicer):
     def __init__(self, loader: ModelLoader):
         self.loader = loader
@@ -39,16 +53,27 @@ class InfererServicer(pb_grpc.InfererServicer):
                 context.set_details(f"model produced invalid JSON: {exc}")
                 return pb.ExtractResponse()
 
-        # Validate/normalize through the shared schema, then always stamp method.
-        model = Extraction(**data)
-        model.extraction_method = "llm"
+        return _finalize(data)
 
-        resp = pb.ExtractResponse(raw_json=model.model_dump_json())
-        for field in Extraction.TYPED_FIELDS:
-            value = getattr(model, field, None)
-            if value is not None:
-                setattr(resp, field, value)
-        return resp
+    def ExtractStream(self, request, context):  # noqa: N802 (gRPC method name)
+        if MOCK:
+            for piece in ('{"surname": "MOCK", ', '"document_number": "M0"}'):
+                yield pb.ExtractChunk(delta=piece)
+            data = {"surname": "MOCK", "document_number": "M0"}
+        else:
+            pieces = []
+            for piece in self.loader.generate_stream(build_prompt(request.markdown)):
+                pieces.append(piece)
+                yield pb.ExtractChunk(delta=piece)
+            raw = "".join(pieces).strip()
+            try:
+                data = repair_json(raw)
+            except Exception as exc:  # invalid JSON from the model
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"model produced invalid JSON: {exc}")
+                return
+
+        yield pb.ExtractChunk(done=True, result=_finalize(data))
 
     def Health(self, request, context):  # noqa: N802 (gRPC method name)
         return pb.HealthReply(

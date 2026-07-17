@@ -31,7 +31,7 @@ use mlis_core::Extraction;
 use serde_json::Value;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 pub struct Pipeline {
     /// The OCR engine (docling-serve by default, or native on Linux/WSL).
@@ -116,6 +116,17 @@ pub struct PipelineResult {
     pub method: Method,
 }
 
+/// Progress/terminal events emitted by [`Pipeline::process_document_stream`].
+pub enum ProcessEvent {
+    /// Incremental Tier-2 LLM text. Never sent on the Tier-1 fast path.
+    Delta(String),
+    /// Terminal: the full pipeline result, same shape as
+    /// [`Pipeline::process_document`]'s return value.
+    Done(Box<PipelineResult>),
+    /// Terminal: an OCR-stage failure (mirrors [`PipelineError`]).
+    Failed(String),
+}
+
 impl Pipeline {
     /// Construct with an explicit OCR engine and inferer endpoint. Tier-3
     /// security (audit log, encryption) is off; enable it via [`from_env`] or
@@ -196,28 +207,44 @@ impl Pipeline {
         Ok(extraction_from_response(resp))
     }
 
+    /// Stage 1-2: OCR the input, write `<input>.md`, and check for a
+    /// checksum-valid MRZ (Tier 1). Shared by [`process_document`] and
+    /// [`process_document_stream`] — the two differ only in how they handle a
+    /// Tier-1 miss (unary vs. streaming Tier-2 fallback).
+    ///
+    /// [`process_document`]: Pipeline::process_document
+    /// [`process_document_stream`]: Pipeline::process_document_stream
+    async fn ocr_and_tier1(
+        &self,
+        input: &Path,
+    ) -> Result<(String, PathBuf, Option<mrz::MrzData>, Option<Value>), PipelineError> {
+        let markdown = self.ocr.to_markdown(input).await?;
+
+        let md_path = input.with_extension("md");
+        tokio::fs::write(&md_path, &markdown).await?;
+
+        // Tier 1: deterministic ICAO 9303 MRZ validation. A valid composite
+        // checksum mathematically proves the read — no LLM needed.
+        let mrz_data = mrz::find_and_parse(&markdown).ok();
+        let tier1 = mrz_data
+            .as_ref()
+            .filter(|m| m.valid())
+            .map(|m| serde_json::to_value(extraction_from_mrz(m)).expect("Extraction serializes"));
+        Ok((markdown, md_path, mrz_data, tier1))
+    }
+
     /// Run the full pipeline on a local image/PDF. Writes `<input>.md` and
     /// `<input>.json` next to the input file.
     ///
     /// An OCR failure is an `Err`; an LLM-inferer failure is *not* — it
     /// degrades to `llm_error: Some(..)` with the OCR Markdown still returned.
     pub async fn process_document(&self, input: &Path) -> Result<PipelineResult, PipelineError> {
-        // Stage 1: OCR via the configured engine (docling-serve or native).
-        let markdown = self.ocr.to_markdown(input).await?;
-
-        let md_path = input.with_extension("md");
-        tokio::fs::write(&md_path, &markdown).await?;
+        let (markdown, md_path, mrz_data, tier1) = self.ocr_and_tier1(input).await?;
         let mut json_path = md_path.with_extension("json");
 
-        // Tier 1: deterministic ICAO 9303 MRZ validation. A valid composite
-        // checksum mathematically proves the read — no LLM needed. Otherwise
-        // Tier 2: semantic JSON extraction via the persistent gRPC inferer.
-        let mrz_data = mrz::find_and_parse(&markdown).ok();
-        let (extracted, method, llm_error) = if let Some(m) =
-            mrz_data.as_ref().filter(|m| m.valid())
-        {
-            let value =
-                serde_json::to_value(extraction_from_mrz(m)).expect("Extraction serializes");
+        // Tier 2: semantic JSON extraction via the persistent gRPC inferer,
+        // used only when Tier 1 found no checksum-valid MRZ.
+        let (extracted, method, llm_error) = if let Some(value) = tier1 {
             (Some(value), Method::MrzDeterministic, None)
         } else {
             match self.extract_via_inferer(&markdown).await {
@@ -252,6 +279,100 @@ impl Pipeline {
             mrz: mrz_data,
             method,
         })
+    }
+
+    /// Streaming variant of [`process_document`] for callers (`mlis-serve`)
+    /// that want to render Tier-2 LLM progress instead of freezing during the
+    /// wait. Emits `Delta` events as the model generates, then exactly one
+    /// terminal `Done` or `Failed` event on `tx`.
+    ///
+    /// [`process_document`]: Pipeline::process_document
+    pub async fn process_document_stream(&self, input: &Path, tx: mpsc::Sender<ProcessEvent>) {
+        let (markdown, md_path, mrz_data, tier1) = match self.ocr_and_tier1(input).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.send(ProcessEvent::Failed(e.to_string())).await;
+                return;
+            }
+        };
+        let mut json_path = md_path.with_extension("json");
+
+        let (extracted, method, llm_error) = if let Some(value) = tier1 {
+            (Some(value), Method::MrzDeterministic, None)
+        } else {
+            match self.extract_via_inferer_stream(&markdown, &tx).await {
+                Ok(extraction) => {
+                    let value = serde_json::to_value(&extraction).expect("Extraction serializes");
+                    (Some(value), Method::Llm, None)
+                }
+                Err(e) => (None, Method::Llm, Some(e)),
+            }
+        };
+
+        let mut sidecar_stdout = String::new();
+        if let Some(value) = &extracted {
+            match self
+                .write_outputs(input, &json_path, value, method, mrz_data.as_ref())
+                .await
+            {
+                Ok(written) => json_path = written,
+                Err(e) => sidecar_stdout = format!("warning: could not persist output: {e}"),
+            }
+        }
+
+        let _ = tx
+            .send(ProcessEvent::Done(Box::new(PipelineResult {
+                markdown,
+                md_path,
+                json_path,
+                extracted,
+                llm_error,
+                sidecar_stdout,
+                mrz: mrz_data,
+                method,
+            })))
+            .await;
+    }
+
+    /// Tier 2 streaming: like [`extract_via_inferer`] but forwards incremental
+    /// text on `tx` as [`ProcessEvent::Delta`] while the model generates.
+    ///
+    /// [`extract_via_inferer`]: Pipeline::extract_via_inferer
+    async fn extract_via_inferer_stream(
+        &self,
+        markdown: &str,
+        tx: &mpsc::Sender<ProcessEvent>,
+    ) -> Result<Extraction, String> {
+        let _guard = self.llm_lock.lock().await;
+        let mut client = InfererClient::connect(self.inferer_addr.clone())
+            .await
+            .map_err(|e| format!("cannot reach inferer at {}: {e}", self.inferer_addr))?;
+        let mut stream = client
+            .extract_stream(ExtractRequest {
+                markdown: markdown.to_string(),
+                image_roi: Vec::new(),
+            })
+            .await
+            .map_err(|e| format!("inferer ExtractStream RPC failed: {e}"))?
+            .into_inner();
+
+        loop {
+            match stream.message().await {
+                Ok(Some(chunk)) => {
+                    if !chunk.delta.is_empty() {
+                        let _ = tx.send(ProcessEvent::Delta(chunk.delta)).await;
+                    }
+                    if chunk.done {
+                        return match chunk.result {
+                            Some(result) => Ok(extraction_from_response(result)),
+                            None => Err("inferer stream finished without a result".into()),
+                        };
+                    }
+                }
+                Ok(None) => return Err("inferer stream ended before a final chunk".into()),
+                Err(e) => return Err(format!("inferer stream error: {e}")),
+            }
+        }
     }
 
     /// Write the extraction JSON (encrypted to `<input>.json.enc` when a key is
@@ -372,7 +493,7 @@ fn extraction_from_response(r: inferer::ExtractResponse) -> Extraction {
 mod tests {
     use super::*;
     use inferer::inferer_server::{Inferer, InfererServer};
-    use inferer::{ExtractResponse, HealthReply, HealthRequest};
+    use inferer::{ExtractChunk, ExtractResponse, HealthReply, HealthRequest};
     use tonic::{transport::Server, Request, Response, Status};
 
     // A mock inferer: returns typed fields for ordinary input, or a validated
@@ -382,6 +503,13 @@ mod tests {
 
     #[tonic::async_trait]
     impl Inferer for MockInferer {
+        type ExtractStreamStream = std::pin::Pin<
+            Box<
+                dyn tonic::codegen::tokio_stream::Stream<Item = Result<ExtractChunk, Status>>
+                    + Send,
+            >,
+        >;
+
         async fn extract(
             &self,
             req: Request<ExtractRequest>,
@@ -407,6 +535,47 @@ mod tests {
                 mrz_line: Some(md.chars().take(4).collect()),
                 ..Default::default()
             }))
+        }
+
+        async fn extract_stream(
+            &self,
+            req: Request<ExtractRequest>,
+        ) -> Result<Response<Self::ExtractStreamStream>, Status> {
+            let md = req.into_inner().markdown;
+            let result = if md.contains("RAW") {
+                let raw = serde_json::json!({
+                    "surname": "RAWNAME",
+                    "document_number": "R999",
+                    "extraction_method": "will-be-overwritten",
+                })
+                .to_string();
+                ExtractResponse {
+                    raw_json: raw,
+                    ..Default::default()
+                }
+            } else {
+                ExtractResponse {
+                    document_type: Some("P".into()),
+                    surname: Some("DOE".into()),
+                    given_names: Some("JOHN".into()),
+                    document_number: Some("X1234567".into()),
+                    mrz_line: Some(md.chars().take(4).collect()),
+                    ..Default::default()
+                }
+            };
+            let chunks = vec![
+                Ok(ExtractChunk {
+                    delta: "mock-delta".into(),
+                    done: false,
+                    result: None,
+                }),
+                Ok(ExtractChunk {
+                    delta: String::new(),
+                    done: true,
+                    result: Some(result),
+                }),
+            ];
+            Ok(Response::new(Box::pin(tokio_stream::iter(chunks))))
         }
 
         async fn health(
@@ -467,6 +636,33 @@ mod tests {
         assert_eq!(e.document_number.as_deref(), Some("R999"));
         // Method is always normalized to "llm", never what the model echoed.
         assert_eq!(e.extraction_method, "llm");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn extract_via_inferer_stream_forwards_deltas_and_result() {
+        let (addr, server) = spawn_mock().await;
+        let pipeline = Pipeline::new(Box::new(DoclingEngine::new("http://localhost:5001")), addr);
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let extraction = pipeline
+            .extract_via_inferer_stream("P<UTO passport markdown", &tx)
+            .await
+            .expect("inferer extract_stream");
+        drop(tx);
+
+        let mut deltas = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match event {
+                ProcessEvent::Delta(d) => deltas.push(d),
+                _ => panic!("extract_via_inferer_stream should only send Delta events"),
+            }
+        }
+
+        assert_eq!(deltas, vec!["mock-delta".to_string()]);
+        assert_eq!(extraction.surname.as_deref(), Some("DOE"));
+        assert_eq!(extraction.document_number.as_deref(), Some("X1234567"));
+        assert_eq!(extraction.extraction_method, "llm");
         server.abort();
     }
 }

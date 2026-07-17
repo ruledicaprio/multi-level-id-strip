@@ -1,5 +1,7 @@
 //! Native OCR engine (Linux/WSL): Tesseract + Leptonica via `leptess`, with a
-//! preprocessing pass (grayscale + Otsu binarization).
+//! preprocessing pipeline (DPI normalization, orientation correction,
+//! deskew, grayscale + Otsu binarization) tuned for phone-camera document
+//! photos.
 //!
 //! **Linux/WSL only** — this crate links the system `libtesseract` and
 //! `libleptonica` libraries (apt: `libtesseract-dev libleptonica-dev clang
@@ -25,12 +27,16 @@ pub enum OcrError {
 
 /// OCR an image file into text.
 ///
-/// Grayscales + Otsu-binarizes the image, then runs Tesseract in `lang` (e.g.
-/// `"eng"`). Tesseract locates its trained data via the standard install path /
+/// Normalizes DPI, corrects orientation, deskews, then grayscales +
+/// Otsu-binarizes the image before running Tesseract in `lang` (e.g. `"eng"`).
+/// Tesseract locates its trained data via the standard install path /
 /// `TESSDATA_PREFIX`.
 pub fn image_to_text(path: &Path, lang: &str) -> Result<String, OcrError> {
     let img = image::open(path)?;
-    let binarized = preprocess::binarize(&img);
+    let normalized = preprocess::normalize_dpi(&img);
+    let oriented = preprocess::correct_orientation(&normalized, lang);
+    let deskewed = preprocess::deskew(&oriented);
+    let binarized = preprocess::binarize(&deskewed);
 
     // leptess reads from an in-memory encoded image; hand it a PNG buffer.
     let mut buf = std::io::Cursor::new(Vec::new());
@@ -61,5 +67,34 @@ mod tests {
         let text = image_to_text(Path::new(path), "eng").expect("OCR should run");
         println!("--- OCR output ---\n{text}\n--- end ---");
         assert!(!text.trim().is_empty(), "expected some recognized text");
+    }
+
+    // Confirms the full pipeline (orientation correction in particular) still
+    // recovers readable text from a 90-degree-rotated version of the same
+    // specimen. Ignored by default — needs real tessdata, same as above.
+    #[test]
+    #[ignore]
+    fn ocr_reads_specimen_image_rotated_90_degrees() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../samples/Croatian_passport_data_page.jpg"
+        );
+        let img = image::open(path).expect("open specimen");
+        let rotated = image::DynamicImage::ImageRgb8(image::imageops::rotate90(&img.to_rgb8()));
+
+        let tmp = std::env::temp_dir().join(format!(
+            "ocr-daemon-rotated-specimen-{}.png",
+            std::process::id()
+        ));
+        rotated.save(&tmp).expect("save rotated specimen");
+
+        let text = image_to_text(&tmp, "eng");
+        std::fs::remove_file(&tmp).ok();
+        let text = text.expect("OCR should run on rotated input");
+        println!("--- OCR output (rotated input) ---\n{text}\n--- end ---");
+        assert!(
+            !text.trim().is_empty(),
+            "expected orientation correction to recover readable text"
+        );
     }
 }

@@ -49,3 +49,18 @@ class ModelLoader:
             stop=["<|im_end|>"],
         )
         return out["choices"][0]["text"].strip()
+
+    def generate_stream(self, prompt: str):
+        """Same generation as `generate`, yielding raw text deltas as they're
+        produced. Callers should strip only the accumulated text, not each
+        delta (whitespace tokens are meaningful mid-stream)."""
+        if self._llm is None:
+            self.load()
+        for chunk in self._llm(
+            prompt,
+            max_tokens=500,
+            temperature=0.0,
+            stop=["<|im_end|>"],
+            stream=True,
+        ):
+            yield chunk["choices"][0]["text"]

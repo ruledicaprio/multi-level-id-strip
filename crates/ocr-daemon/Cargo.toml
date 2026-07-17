@@ -8,4 +8,5 @@ edition.workspace = true
 [dependencies]
 leptess = "0.14"
 image = "0.25"
+imageproc = "0.25"
 thiserror = "2"

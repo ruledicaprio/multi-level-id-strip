@@ -97,9 +97,13 @@ Renamed `docs-to-md` → **`multi-level-id-strip` (mlis)** and delivered:
 * **Canonical schema** ✅ — one `mlis-core::Extraction` shape shared by all tiers and the WASM demo.
 
 ## 9. Strategic Roadmap: v0.5.0
-* **Streaming inference** — token streaming from the inferer so the UI isn't frozen during fallback.
+* **Streaming inference** ✅ — `ExtractStream` gRPC server-streaming RPC (`proto/inferer.proto`) carries
+  token deltas from the inferer to `mlis-serve`, which forwards them as SSE (`Pipeline::process_document_stream`,
+  `crates/mlis-pipeline/src/lib.rs`) so the UI shows live progress during Tier 2 instead of freezing.
 * **TD2 OCR-repair parity** — extend the checksum-verified repair variants to TD2 as thoroughly as TD1/TD3.
-* **Native OCR preprocessing** — deskew / orientation detection (Leptonica) beyond Otsu binarization.
+* **Native OCR preprocessing** ✅ — DPI normalization, Tesseract-confidence-scored 0/90/180/270
+  orientation correction, and projection-profile deskew, ahead of the existing Otsu binarization
+  (`crates/ocr-daemon/src/preprocess.rs`).
 * **Bridge integration test in CI** — stand up the real inferer against a tiny fixture model.
 
 ## 10. Getting Started
