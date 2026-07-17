@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-17
+
+Throughput & robustness: the Tier-2 UI freeze and the native OCR path's biggest accuracy gap.
+
+### Added
+- **Streaming Tier-2 inference (SSE)**: `proto/inferer.proto` gains a server-streaming `ExtractStream`
+  RPC (`ExtractChunk{delta, done, result}`) alongside the existing unary `Extract`. The Python inferer
+  uses `llama-cpp-python`'s native `stream=True` support to emit token deltas as the model generates;
+  `mlis-serve`'s `/api/extract` now returns a Server-Sent Events stream that forwards those deltas to
+  the browser in real time, so the upload page shows live "Extracting…" progress instead of a frozen
+  status line for the ~few-second-to-30s Tier-2 wait. The Tier-1 (deterministic MRZ) fast path is
+  unaffected — it still resolves in a single SSE `result` event with no visible change in behavior.
+- **Native OCR preprocessing** (`ocr-daemon`, Linux/WSL): three new steps ahead of the existing Otsu
+  binarization — DPI normalization (upscales small images to a ~300-DPI-equivalent floor), orientation
+  correction (0/90/180/270°, scored by Tesseract's own confidence), and deskew (projection-profile
+  method, ±15° search). Targets the main failure modes of phone-camera document photos that the native
+  path previously had no defense against.
+
+### Changed
+- `Pipeline::process_document` is unchanged (CLI keeps its existing unary behavior); the OCR + Tier-1
+  logic it shares with the new streaming path was extracted into a private `ocr_and_tier1` helper.
+
 ## [0.4.1] — 2026-07-17
 
 Coverage hardening: closes the one untested boundary in v0.4.0 (the Rust↔Python gRPC bridge)

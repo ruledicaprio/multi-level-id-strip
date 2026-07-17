@@ -36,7 +36,8 @@ flowchart LR
     F -->|Markdown| E
     E --> T{"🔐 Tier 1<br/>ICAO 9303 checksums<br/>valid?"}
     T -->|"yes — deterministic,<br/>LLM skipped"| H[📦 .md + .json artifacts]
-    T -->|"no — fallback,<br/>🔒 mutex"| G["🧠 Tier 2 · gRPC<br/>warm inferer<br/>Qwen 2.5 GGUF · GPU"]
+    T -->|"no — fallback,<br/>🔒 mutex"| G["🧠 Tier 2 · gRPC (streamed)<br/>warm inferer<br/>Qwen 2.5 GGUF · GPU"]
+    G -->|"live progress via SSE<br/>(mlis-serve only)"| D
     G -->|strict JSON| H
 
     A2[🌐 Browser-only demo] -->|"tesseract.js OCR +<br/>mrz crate as WASM"| W["GitHub Pages<br/>no server at all"]
@@ -153,7 +154,8 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 │   ├── mlis-core/     Canonical Extraction schema + Tier-3 audit/crypto helpers
 │   ├── mlis-pipeline/ OCR engine trait → Tier 1 MRZ → Tier 2 gRPC inferer → JSON
 │   ├── mlis-cli/      CLI front-end (binary `mlis`; also `mlis decrypt`)
-│   ├── mlis-serve/    axum web app: upload page + POST /api/extract, bearer auth + TLS
+│   ├── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
+│   │                  bearer auth + TLS
 │   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only)
 ├── proto/            inferer.proto — the gRPC contract shared by Rust + Python
 ├── python/inferer/   Persistent warm LLM sidecar (grpcio, Qwen GGUF via llama.cpp)
