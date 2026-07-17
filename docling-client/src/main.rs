@@ -36,10 +36,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(result) => {
             println!("✅ [Rust] Docling OCR successful!");
             println!("💾 [Rust] Saved Markdown to: {}", result.md_path.display());
-            print!("{}", result.sidecar_stdout);
+            match result.method {
+                pipeline::Method::MrzDeterministic => {
+                    println!("🔐 [Rust] ICAO 9303 checksums valid — deterministic MRZ extraction (LLM skipped)");
+                    if let Some(extracted) = &result.extracted {
+                        println!("{}", serde_json::to_string_pretty(extracted)?);
+                    }
+                }
+                pipeline::Method::Llm => {
+                    match &result.mrz {
+                        Some(m) => println!(
+                            "⚠️ [Rust] MRZ found but checksums failed ({:?}) — falling back to LLM",
+                            m.checks
+                        ),
+                        None => println!("ℹ️ [Rust] No MRZ found — using LLM extraction"),
+                    }
+                    print!("{}", result.sidecar_stdout);
+                }
+            }
             match result.llm_error {
                 None => println!(
-                    "🎉 [Rust] Pipeline completed! JSON saved to: {}",
+                    "🎉 [Rust] Pipeline completed via {}! JSON saved to: {}",
+                    result.method.as_str(),
                     result.json_path.display()
                 ),
                 Some(e) => eprintln!("⚠️ [Rust] LLM extraction failed: {e}"),

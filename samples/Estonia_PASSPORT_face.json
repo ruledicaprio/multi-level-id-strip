@@ -1,0 +1,15 @@
+{
+  "date_of_birth": "1980-01-08",
+  "date_of_expiry": "2030-11-21",
+  "document_number": "KS0000182",
+  "document_type": "P",
+  "extraction_method": "mrz-deterministic",
+  "given_names": "JAAK KRISTJAN",
+  "issuing_country": "EST",
+  "mrz_checksums_valid": true,
+  "mrz_line": "P<ESTJOEORG<<JAAK<KRISTJAN<<<<<<<<<<<<<<<<<<\nKS00001827EST8001081M301121638001085718<<<76",
+  "nationality": "EST",
+  "personal_number": "38001085718",
+  "sex": "M",
+  "surname": "JOEORG"
+}

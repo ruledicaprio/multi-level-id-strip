@@ -1,12 +1,15 @@
 {
-  "document_type": "PASSPORT",
-  "issuing_country": "CROATIA",
-  "document_number": "0070070071",
-  "surname": "HRV",
-  "given_names": "8212258F14",
-  "nationality": "CROATIA",
-  "date_of_birth": null,
-  "sex": null,
-  "date_of_expiry": null,
-  "mrz_line": "06"
+  "date_of_birth": "1982-12-25",
+  "date_of_expiry": "2014-07-01",
+  "document_number": "007007007",
+  "document_type": "P",
+  "extraction_method": "mrz-deterministic",
+  "given_names": "SPECIMEN",
+  "issuing_country": "HRV",
+  "mrz_checksums_valid": true,
+  "mrz_line": "P<HRVSPECIMEN<<SPECIMEN<<<<<<<<<<<<<<<<<<<<<\n0070070071HRV8212258F1407019<<<<<<<<<<<<<<06",
+  "nationality": "HRV",
+  "personal_number": null,
+  "sex": "F",
+  "surname": "SPECIMEN"
 }

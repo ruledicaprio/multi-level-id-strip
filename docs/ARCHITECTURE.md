@@ -1,4 +1,4 @@
-# 🏛️ Architectural Manifest: Air-Gapped Document Processing Pipeline (v0.2.0)
+# 🏛️ Architectural Manifest: Air-Gapped Document Processing Pipeline (v0.3.0)
 
 ## 1. Executive Summary
 This repository houses the design and implementation of a localized, air-gapped machine learning architecture dedicated to processing complex identity documents (passports, ID cards) and multipage technical manuals. Engineered for high-stakes rental and compliance applications, the system automates data extraction while enforcing strict data privacy, zero recurring cloud API costs, and optimal local hardware utilization. By decoupling high-concurrency file orchestration from heavy machine learning workloads, the pipeline achieves a robust, production-ready foundation for sensitive Personally Identifiable Information (PII) processing.
@@ -6,7 +6,8 @@ This repository houses the design and implementation of a localized, air-gapped 
 ## 2. Architectural Foundation: Hybrid Polyglot Microservices
 The system utilizes a **Hybrid Polyglot Microservice Architecture**, strategically assigning tasks to the languages and environments best suited for them:
 
-* **Pipeline Core (Rust library):** The shared `pipeline` crate owns the end-to-end sequence (OCR → Markdown persistence → LLM sidecar → JSON) behind a single `process_document()` entry point. Both binaries are thin wrappers around it, and it is the designated home of the v0.3.0 deterministic MRZ parser (`pipeline/src/mrz.rs`).
+* **Deterministic MRZ Core (Rust library, zero deps):** The `mrz` crate implements ICAO 9303 TD3/TD1 parsing with full 7-3-1 check-digit validation and checksum-verified OCR repair. Zero runtime dependencies, so the identical code compiles natively for the pipeline and to WebAssembly for the public browser demo.
+* **Pipeline Core (Rust library):** The shared `pipeline` crate owns the end-to-end sequence (OCR → Markdown persistence → Tier 1 MRZ validation → Tier 2 LLM sidecar fallback → JSON) behind a single `process_document()` entry point. Both binaries are thin wrappers around it.
 * **Orchestration Layer (Rust CLI):** A lightweight asynchronous Rust client (`docling-client`) handles local file system I/O, CLI argument validation, and subprocess management. Rust provides compile-time memory safety and a near-zero footprint, ensuring the orchestrator never becomes a system bottleneck.
 * **Web Front-End (Rust / axum):** A minimal axum server (`docling-app`) exposes the same pipeline as an upload page and a JSON API. LLM inference is serialized behind a mutex inside the pipeline core, so concurrent uploads queue instead of exhausting VRAM.
 * **OCR & Layout Engine (Containerized Python):** The visual layout detection and OCR models (Layout Transformers, RapidOCR) run inside an immutable Docker container (`docling-serve`). This isolates complex Python dependencies, prevents host-system degradation, and guarantees reproducible text extraction.
@@ -34,10 +35,15 @@ sequenceDiagram
     P->>D: POST /v1/convert/file
     D-->>P: structured Markdown
     P->>P: write <input>.md
-    P->>L: spawn .venv python (serialized via mutex)
-    L->>L: load GGUF → VRAM, strict JSON prompt
-    L-->>P: <input>.json
-    P-->>B: PipelineResult { markdown, extracted, llm_error }
+    P->>P: Tier 1 — ICAO 9303 MRZ checksum validation
+    alt MRZ composite check digit valid
+        P->>P: deterministic JSON, LLM skipped
+    else no MRZ / checksums failed
+        P->>L: spawn .venv python (serialized via mutex)
+        L->>L: load GGUF → VRAM, strict JSON prompt
+        L-->>P: <input>.json
+    end
+    P-->>B: PipelineResult { markdown, extracted, mrz, method }
     B-->>U: console output / JSON response
 ```
 
@@ -69,11 +75,14 @@ The pipeline has been successfully tested against real-world specimen documents 
 * **Data Extraction:** Key PII fields (Surname, Given Names, Date of Birth, Nationality) and the Machine Readable Zone (MRZ) were successfully isolated from the raw Markdown.
 * **Inference Efficiency:** End-to-end processing, including model loading and JSON generation, completes in approximately 25 seconds on local hardware, proving viability for batch-processing workflows.
 
-## 7. Strategic Roadmap: v0.3.0 (Hybrid Deterministic Extraction)
-While v0.2.0 proves the architectural viability, v0.3.0 will introduce a **Hybrid Deterministic Extraction** model to achieve 100% accuracy for identity verification:
-* **Tier 1 (Pure Rust MRZ Parser):** Implement native Rust-based ICAO 9303 checksum validation in `pipeline/src/mrz.rs`. This will mathematically verify the MRZ, Document Number, and Dates, guaranteeing fraud detection and eliminating LLM hallucinations on critical fields.
-* **Tier 2 (LLM Semantic Fallback):** Reserve the local Qwen 2.5 model exclusively for unstructured, non-standardized data extraction (e.g., parsing technical specifications from multipage equipment manuals, or acting as a fallback for damaged/low-quality OCR).
-* **Tier 3 (Cryptographic Security):** Introduce SHA-256 hashing for PII audit trails, AES-256-GCM encryption for the final JSON payload prior to database insertion, and authentication for the web app.
+## 7. v0.3.0 — Hybrid Deterministic Extraction (delivered)
+* **Tier 1 (Pure Rust MRZ Parser)** ✅ — the `mrz` crate performs native ICAO 9303 checksum validation (TD3 + TD1), mathematically verifying the MRZ, Document Number, and Dates. Checksum-verified OCR repair corrects lookalike misreads (`B`↔`8`, `O`↔`0`, K/L filler runs, dropped/hallucinated characters) with the composite check digit as the oracle, eliminating LLM hallucinations on critical fields.
+* **Tier 2 (LLM Semantic Fallback)** ✅ — the local Qwen 2.5 model now runs only when no checksum-valid MRZ exists: unstructured documents (technical manuals) or damaged/low-quality scans.
+* **Client-Side Demo (WASM)** ✅ — the same `mrz` crate compiled to WebAssembly powers a static GitHub Pages demo (tesseract.js OCR, in-browser downscaling, ephemeral 10-second JSON display). No backend exists; no data is persistent on any server.
 
-## 8. Getting Started
+## 8. Strategic Roadmap: v0.4.0
+* **Tier 3 (Cryptographic Security):** SHA-256 hashing for PII audit trails, AES-256-GCM encryption for the final JSON payload prior to database insertion, and authentication for the web app.
+* **TD2 format** (older ID cards / visas) and date plausibility checks (expiry vs. today) in the `mrz` crate.
+
+## 9. Getting Started
 See the [README quickstart](../README.md#-quickstart).

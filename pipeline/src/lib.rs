@@ -1,9 +1,17 @@
 //! Shared document-processing pipeline:
-//! docling-serve OCR → Markdown on disk → local GGUF LLM sidecar → structured JSON.
+//! docling-serve OCR → Markdown on disk → **Tier 1** deterministic ICAO 9303
+//! MRZ validation → **Tier 2** local GGUF LLM sidecar fallback → structured JSON.
+//!
+//! Tier 1 (the [`mrz`] crate) mathematically verifies every MRZ check digit.
+//! When the composite checksum validates, the extraction is provably faithful
+//! to the printed document and the probabilistic LLM step is skipped entirely.
+//! The LLM only runs for documents without a valid MRZ (damaged scans,
+//! non-standard documents, technical manuals).
 //!
 //! Both binaries (`docling-client` CLI and `docling-app` web server) are thin
-//! wrappers around [`Pipeline::process_document`]. The v0.3.0 deterministic
-//! MRZ parser (ICAO 9303) will live here as `mrz.rs`.
+//! wrappers around [`Pipeline::process_document`].
+
+pub use mrz;
 
 use docling_rs::DoclingClient;
 use serde_json::Value;
@@ -48,6 +56,25 @@ impl From<std::io::Error> for PipelineError {
     }
 }
 
+/// Which extraction tier produced the final JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// Tier 1: ICAO 9303 MRZ with all check digits valid — deterministic,
+    /// LLM skipped.
+    MrzDeterministic,
+    /// Tier 2: LLM sidecar (no MRZ found, or its checksums failed).
+    Llm,
+}
+
+impl Method {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MrzDeterministic => "mrz-deterministic",
+            Self::Llm => "llm",
+        }
+    }
+}
+
 pub struct PipelineResult {
     /// OCR output from docling-serve.
     pub markdown: String,
@@ -61,6 +88,11 @@ pub struct PipelineResult {
     pub llm_error: Option<String>,
     /// Captured sidecar stdout (model load / extraction preview messages).
     pub sidecar_stdout: String,
+    /// Parsed MRZ when one was found in the OCR output — present even when
+    /// its checksums failed (see `mrz.checks` for per-field results).
+    pub mrz: Option<mrz::MrzData>,
+    /// Which tier produced `extracted`.
+    pub method: Method,
 }
 
 impl Pipeline {
@@ -113,7 +145,29 @@ impl Pipeline {
         tokio::fs::write(&md_path, &markdown).await?;
         let json_path = md_path.with_extension("json");
 
-        // Stage 2: semantic JSON extraction via the Python/GGUF sidecar.
+        // Tier 1: deterministic ICAO 9303 MRZ validation. A valid composite
+        // checksum mathematically proves the read — no LLM needed.
+        let mrz_data = mrz::find_and_parse(&markdown).ok();
+        if let Some(m) = &mrz_data {
+            if m.valid() {
+                let extracted = mrz_to_extraction(m);
+                let pretty =
+                    serde_json::to_string_pretty(&extracted).expect("Value serializes");
+                tokio::fs::write(&json_path, pretty).await?;
+                return Ok(PipelineResult {
+                    markdown,
+                    md_path,
+                    json_path,
+                    extracted: Some(extracted),
+                    llm_error: None,
+                    sidecar_stdout: String::new(),
+                    mrz: mrz_data,
+                    method: Method::MrzDeterministic,
+                });
+            }
+        }
+
+        // Tier 2: semantic JSON extraction via the Python/GGUF sidecar.
         let output = {
             let _guard = self.llm_lock.lock().await;
             tokio::process::Command::new(&self.python_exe)
@@ -165,6 +219,28 @@ impl Pipeline {
             extracted,
             llm_error,
             sidecar_stdout,
+            mrz: mrz_data,
+            method: Method::Llm,
         })
     }
+}
+
+/// Map validated MRZ data onto the same schema the LLM sidecar produces,
+/// plus provenance fields.
+fn mrz_to_extraction(m: &mrz::MrzData) -> Value {
+    serde_json::json!({
+        "document_type": m.document_type,
+        "issuing_country": m.issuing_country,
+        "document_number": m.document_number,
+        "surname": m.surname,
+        "given_names": m.given_names,
+        "nationality": m.nationality,
+        "date_of_birth": m.date_of_birth,
+        "sex": m.sex,
+        "date_of_expiry": m.date_of_expiry,
+        "personal_number": m.personal_number,
+        "mrz_line": m.mrz_lines,
+        "mrz_checksums_valid": true,
+        "extraction_method": Method::MrzDeterministic.as_str(),
+    })
 }

@@ -36,7 +36,8 @@
 </head>
 <body>
 <h1>📄 docs-to-md</h1>
-<p class="muted">Air-gapped document pipeline: docling-serve OCR → Markdown → local Qwen 2.5 GGUF → structured JSON. Nothing leaves this machine.</p>
+<p class="muted">Air-gapped document pipeline: docling-serve OCR → Markdown → ICAO 9303 MRZ validation → local Qwen 2.5 GGUF fallback → structured JSON. Nothing leaves this machine.</p>
+<p class="muted">🔒 <strong>No data is persistent on any server:</strong> uploads are processed in memory on this host and every working file is deleted the moment the response is sent. Images are downscaled in your browser before upload.</p>
 
 <form id="form">
   <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.bmp,.webp" required>
@@ -59,15 +60,40 @@ const form = document.getElementById('form');
 const status = document.getElementById('status');
 const go = document.getElementById('go');
 
+/** Downscale large images client-side before upload (max 2000 px, JPEG q0.85).
+ *  Cuts upload size and OCR time; PDFs and small images pass through as-is. */
+async function prepareFile(file) {
+  if (!file.type.startsWith('image/')) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const maxDim = 2000;
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.size < 2 * 1024 * 1024) { bmp.close?.(); return file; }
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    bmp.close?.();
+    const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+    if (!blob) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch {
+    return file; // downscaling is best-effort — never block the upload
+  }
+}
+
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const file = document.getElementById('file').files[0];
-  if (!file) return;
+  const original = document.getElementById('file').files[0];
+  if (!original) return;
 
   go.disabled = true;
   status.className = 'muted';
-  status.textContent = 'Processing… OCR + local LLM inference can take ~30 s.';
+  status.textContent = 'Preparing file (downscaling locally)…';
   for (const id of ['json-section', 'md-section']) document.getElementById(id).style.display = 'none';
+
+  const file = await prepareFile(original);
+  status.textContent = 'Processing… OCR + extraction can take a few seconds to ~30 s.';
 
   const body = new FormData();
   body.append('file', file);

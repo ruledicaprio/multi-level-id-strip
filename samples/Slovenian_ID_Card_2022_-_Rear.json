@@ -1,0 +1,15 @@
+{
+  "date_of_birth": "1985-06-28",
+  "date_of_expiry": "2032-03-28",
+  "document_number": "IE9876543",
+  "document_type": "I",
+  "extraction_method": "mrz-deterministic",
+  "given_names": "JANA",
+  "issuing_country": "SVN",
+  "mrz_checksums_valid": true,
+  "mrz_line": "I<SVNIE987654302806985505145K<\n8506287F3203282SVN<<<<<<<<<<<2\nVZOREC<<JANA<<<<<<<<<<<<<<<<<<",
+  "nationality": "SVN",
+  "personal_number": "2806985505145K",
+  "sex": "F",
+  "surname": "VZOREC"
+}

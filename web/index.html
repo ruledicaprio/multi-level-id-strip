@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MRZ Validator — docs-to-md</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+  }
+  h1 { font-size: 1.45rem; margin-bottom: .25rem; }
+  .muted { opacity: .65; font-size: .9rem; }
+  .privacy {
+    border: 1px solid #10b981; border-radius: .5rem; padding: .75rem 1rem;
+    margin: 1rem 0; font-size: .92rem;
+    background: color-mix(in srgb, #10b981 8%, transparent);
+  }
+  .drop {
+    display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    padding: 1rem; margin: 1rem 0; border-radius: .5rem;
+    border: 1px dashed color-mix(in srgb, currentColor 35%, transparent);
+  }
+  button {
+    padding: .5rem 1.25rem; border-radius: .375rem; border: 1px solid currentColor;
+    background: none; color: inherit; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  #status { margin: .5rem 0; min-height: 1.4em; }
+  .error { color: #c0392b; }
+  .verdict { font-size: 1.1rem; font-weight: 600; padding: .6rem 1rem; border-radius: .5rem; margin: 1rem 0 .5rem; }
+  .verdict.ok { background: color-mix(in srgb, #10b981 15%, transparent); border: 1px solid #10b981; }
+  .verdict.bad { background: color-mix(in srgb, #c0392b 12%, transparent); border: 1px solid #c0392b; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
+  td, th { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); font-size: .95rem; }
+  th { opacity: .65; font-weight: 500; white-space: nowrap; }
+  .chip { display: inline-block; padding: .05rem .5rem; border-radius: 1rem; font-size: .8rem; margin-left: .4rem; }
+  .chip.ok { background: color-mix(in srgb, #10b981 18%, transparent); }
+  .chip.bad { background: color-mix(in srgb, #c0392b 18%, transparent); }
+  pre {
+    padding: .75rem; border-radius: .375rem; overflow-x: auto;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    white-space: pre-wrap; word-break: break-all; font-size: .85rem;
+  }
+  details { margin: 1rem 0; }
+  textarea {
+    width: 100%; min-height: 4.5rem; font-family: ui-monospace, monospace;
+    font-size: .85rem; padding: .5rem; border-radius: .375rem;
+    background: transparent; color: inherit;
+    border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  }
+  section#result { display: none; }
+  footer { margin-top: 2.5rem; font-size: .85rem; opacity: .6; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>🔐 MRZ Validator</h1>
+<p class="muted">ICAO 9303 machine-readable-zone parser with full check-digit validation — Rust compiled to WebAssembly, OCR by tesseract.js. Part of <a href="https://github.com/ruledicaprio/docs-to-md">docs-to-md</a>.</p>
+
+<div class="privacy">
+  🔒 <strong>Nothing leaves your browser. No data is persistent on any server.</strong><br>
+  This page is static — there is no backend. Your document is downscaled, OCR'd and
+  validated entirely on your device, in this tab. Close the tab and every trace is gone.
+</div>
+
+<div class="drop">
+  <input type="file" id="file" accept=".jpg,.jpeg,.png,.webp,.bmp">
+  <button id="go">Scan &amp; validate</button>
+  <span class="muted">passport (TD3) or ID card (TD1) photo</span>
+</div>
+<div id="status" class="muted"></div>
+
+<details>
+  <summary>…or paste MRZ text directly</summary>
+  <p class="muted">Two lines of 44 characters (passport) or three lines of 30 (ID card).</p>
+  <textarea id="manual" spellcheck="false" placeholder="P&lt;UTOERIKSSON&lt;&lt;ANNA&lt;MARIA&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;
+L898902C36UTO7408122F1204159ZE184226B&lt;&lt;&lt;&lt;&lt;10"></textarea>
+  <p><button id="go-manual">Validate text</button></p>
+</details>
+
+<section id="result">
+  <div id="verdict" class="verdict"></div>
+  <table id="fields"></table>
+  <h3 style="font-size:1rem">Check digits</h3>
+  <div id="checks"></div>
+
+  <div id="json-panel" style="display:none">
+    <h3 style="font-size:1rem">📦 JSON payload
+      <span id="countdown" class="chip bad"></span>
+      <button id="copy-json" style="font-size:.8rem; padding:.15rem .7rem; margin-left:.5rem">📋 Copy JSON</button>
+    </h3>
+    <p class="muted">Ephemeral by design: visible for 10 seconds, then wiped from the page. Copy it now if you need it — nothing is stored anywhere.</p>
+    <pre id="json-out"></pre>
+  </div>
+
+  <details><summary>Raw MRZ / OCR text</summary><pre id="raw"></pre></details>
+</section>
+
+<footer>
+  Validation is deterministic math (ICAO 9303 7-3-1 checksums), not an AI guess.
+  A ✔ composite check proves the read matches the printed zone.
+  Camera tips: fill the frame with the data page, avoid glare on the MRZ band.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script type="module">
+import init, { parse_mrz_text } from './pkg/mrz_wasm.js';
+
+const MRZ_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
+const status = document.getElementById('status');
+const goBtn = document.getElementById('go');
+
+const wasmReady = init();
+
+function setStatus(msg, isError = false) {
+  status.textContent = msg;
+  status.className = isError ? 'error' : 'muted';
+}
+
+/** Downscale an image to maxDim on the largest side — all in-memory. */
+async function toCanvas(bitmap, maxDim = 1600) {
+  const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bitmap.width * scale);
+  c.height = Math.round(bitmap.height * scale);
+  c.getContext('2d').drawImage(bitmap, 0, 0, c.width, c.height);
+  return c;
+}
+
+/** Crop the bottom band (where the MRZ lives), upscale and grayscale it. */
+function bottomBand(canvas, fraction = 0.42, upscale = 2) {
+  const srcY = Math.round(canvas.height * (1 - fraction));
+  const c = document.createElement('canvas');
+  c.width = canvas.width * upscale;
+  c.height = Math.round(canvas.height * fraction) * upscale;
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(canvas, 0, srcY, canvas.width, canvas.height - srcY, 0, 0, c.width, c.height);
+  const img = ctx.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = y;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+let workerPromise = null;
+function getWorker() {
+  workerPromise ??= (async () => {
+    const worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
+    return worker;
+  })();
+  return workerPromise;
+}
+
+function tryParse(text) {
+  const r = JSON.parse(parse_mrz_text(text));
+  return r.ok ? r : null;
+}
+
+async function scanImage(file) {
+  await wasmReady;
+  setStatus('Loading image (downscaling locally)…');
+  const bitmap = await createImageBitmap(file);
+  const full = await toCanvas(bitmap);
+  bitmap.close?.();
+
+  setStatus('Loading OCR engine (~2 MB, cached after first run)…');
+  const worker = await getWorker();
+
+  // Attempt 1: the bottom band where the MRZ lives, upscaled + grayscale.
+  setStatus('Reading MRZ band…');
+  let { data } = await worker.recognize(bottomBand(full));
+  let parsed = tryParse(data.text);
+  let rawText = data.text;
+
+  // Attempt 2: the whole (downscaled) image.
+  if (!parsed) {
+    setStatus('MRZ band inconclusive — scanning full image…');
+    ({ data } = await worker.recognize(full));
+    parsed = tryParse(data.text);
+    rawText = data.text;
+  }
+
+  if (!parsed) {
+    setStatus('No valid MRZ found. Try a sharper, straighter photo of the data page — or paste the MRZ text below.', true);
+    return;
+  }
+  setStatus('');
+  render(parsed, rawText);
+}
+
+function chip(ok) {
+  return `<span class="chip ${ok ? 'ok' : 'bad'}">${ok ? '✔ valid' : '✘ failed'}</span>`;
+}
+
+function esc(s) {
+  return String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+function render(r, rawText) {
+  document.getElementById('result').style.display = 'block';
+  const v = document.getElementById('verdict');
+  v.className = 'verdict ' + (r.valid ? 'ok' : 'bad');
+  v.textContent = r.valid
+    ? '✔ VALID — every ICAO 9303 check digit verifies'
+    : '✘ CHECKSUM FAILURE — the MRZ does not verify (bad read or tampered document)';
+
+  const rows = [
+    ['Format', r.format === 'Td3' ? 'TD3 (passport)' : 'TD1 (ID card)'],
+    ['Document type', r.document_type],
+    ['Issuing country', r.issuing_country],
+    ['Document number', r.document_number],
+    ['Surname', r.surname],
+    ['Given names', r.given_names],
+    ['Nationality', r.nationality],
+    ['Date of birth', r.date_of_birth],
+    ['Sex', r.sex],
+    ['Date of expiry', r.date_of_expiry],
+    ['Personal number', r.personal_number],
+  ];
+  document.getElementById('fields').innerHTML =
+    rows.map(([k, val]) => `<tr><th>${k}</th><td>${esc(val)}</td></tr>`).join('');
+
+  const c = r.checks;
+  document.getElementById('checks').innerHTML = [
+    ['Document number', c.document_number],
+    ['Date of birth', c.date_of_birth],
+    ['Date of expiry', c.date_of_expiry],
+    ['Personal number', c.personal_number],
+    ['Composite (whole zone)', c.composite],
+  ].map(([k, ok]) => `<div>${k}${chip(ok)}</div>`).join('');
+
+  document.getElementById('raw').textContent = r.mrz_lines + (rawText ? '\n\n--- OCR text ---\n' + rawText : '');
+
+  showJsonPayload(r);
+}
+
+// --- Ephemeral JSON payload: shown for 10 s with a ticking countdown, ---
+// --- then wiped. The ID-checker output, same schema as the pipeline.  ---
+let countdownTimer = null;
+
+function showJsonPayload(r) {
+  const panel = document.getElementById('json-panel');
+  const out = document.getElementById('json-out');
+  const tick = document.getElementById('countdown');
+  const copyBtn = document.getElementById('copy-json');
+
+  let payload = JSON.stringify({
+    document_type: r.document_type,
+    issuing_country: r.issuing_country,
+    document_number: r.document_number,
+    surname: r.surname,
+    given_names: r.given_names,
+    nationality: r.nationality,
+    date_of_birth: r.date_of_birth,
+    sex: r.sex,
+    date_of_expiry: r.date_of_expiry,
+    personal_number: r.personal_number,
+    mrz_checksums_valid: r.valid,
+    extraction_method: 'mrz-wasm-client',
+  }, null, 2);
+
+  clearInterval(countdownTimer);
+  panel.style.display = 'block';
+  out.textContent = payload;
+  copyBtn.style.display = '';
+  copyBtn.textContent = '📋 Copy JSON';
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(payload);
+      copyBtn.textContent = '✔ Copied';
+    } catch {
+      copyBtn.textContent = '✘ Copy blocked';
+    }
+  };
+
+  let remaining = 10;
+  tick.textContent = `wiped in ${remaining}s`;
+  countdownTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      tick.textContent = `wiped in ${remaining}s`;
+    } else {
+      clearInterval(countdownTimer);
+      payload = null;
+      out.textContent = '— wiped. Re-scan to view again —';
+      tick.textContent = 'wiped';
+      copyBtn.style.display = 'none';
+    }
+  }, 1000);
+}
+
+goBtn.addEventListener('click', async () => {
+  const file = document.getElementById('file').files[0];
+  if (!file) { setStatus('Choose an image first.', true); return; }
+  goBtn.disabled = true;
+  document.getElementById('result').style.display = 'none';
+  try {
+    await scanImage(file);
+  } catch (err) {
+    setStatus('Failed: ' + err.message, true);
+  } finally {
+    goBtn.disabled = false;
+  }
+});
+
+document.getElementById('go-manual').addEventListener('click', async () => {
+  await wasmReady;
+  const text = document.getElementById('manual').value;
+  const parsed = tryParse(text);
+  if (!parsed) { setStatus('No parseable MRZ in the pasted text.', true); return; }
+  setStatus('');
+  render(parsed, null);
+});
+</script>
+</body>
+</html>

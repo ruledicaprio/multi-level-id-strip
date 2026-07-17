@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["pipeline", "docling-client", "docling-app"]
+members = ["mrz", "mrz-wasm", "pipeline", "docling-client", "docling-app"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [workspace.dependencies]

@@ -13,3 +13,7 @@ work/
 
 # v0.3.0 work-in-progress drafts (not yet wired into the build)
 drafts/
+
+# wasm-pack build output (built in CI for GitHub Pages)
+mrz-wasm/pkg/
+

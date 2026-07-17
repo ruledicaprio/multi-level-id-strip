@@ -1,0 +1,13 @@
+<!-- image -->
+
+Stalnoprebivalisce/Permanentresidence
+
+## LJUBLJANA STEFANOVAULICA2 1501LJUBLJANA
+
+Pristainiorgan/Competentauthority
+
+JELJUBLUANA
+
+1F9874543
+
+IKSVNIE987654302806985505145K&lt; 8506287F3203282SVN&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;2 VZORECKKJANAKKKKKKKKK&lt;&lt;KK

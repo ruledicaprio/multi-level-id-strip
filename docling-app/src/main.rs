@@ -113,6 +113,8 @@ async fn extract(
                 "filename": filename,
                 "markdown": r.markdown,
                 "extracted": r.extracted,
+                "method": r.method.as_str(),
+                "mrz": r.mrz.as_ref().map(|m| serde_json::to_value(m).expect("MrzData serializes")),
                 "error": r.llm_error,
             });
             cleanup(&state, &[&upload_path, &r.md_path, &r.json_path]).await;
