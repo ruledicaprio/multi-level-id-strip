@@ -178,10 +178,18 @@ mod native {
                 .get_or_try_init(|| async {
                     let path = self.model_path.clone();
                     let n_ctx = self.n_ctx;
-                    tokio::task::spawn_blocking(move || mlis_llm::NativeLlm::load(&path, n_ctx))
-                        .await
-                        .map_err(|e| format!("model load task panicked: {e}"))?
-                        .map(Arc::new)
+                    tokio::task::spawn_blocking(move || {
+                        // Verify on the actual load path, not just in `mlis doctor` — a
+                        // tampered or corrupted GGUF must fail closed before it's ever
+                        // mapped into memory, not just when someone remembers to preflight.
+                        if !mlis_llm::verify::skip_verify() {
+                            mlis_llm::verify::verify_model(&path).map_err(|e| e.to_string())?;
+                        }
+                        mlis_llm::NativeLlm::load(&path, n_ctx)
+                    })
+                    .await
+                    .map_err(|e| format!("model load task panicked: {e}"))?
+                    .map(Arc::new)
                 })
                 .await
                 .cloned()

@@ -145,6 +145,16 @@ mod rust_ocr {
                                 model_dir.join(mlis_ocr::download::RECOGNITION_FILENAME),
                             )
                         };
+                        // Verify on the actual load path, not just in `mlis doctor` —
+                        // a tampered or corrupted-but-complete download (whether
+                        // fetched just now or cached from a previous run) must fail
+                        // closed before it's ever loaded into the OCR engine.
+                        if !mlis_ocr::verify::skip_verify() {
+                            mlis_ocr::verify::verify_detection_model(&detection)
+                                .map_err(|e| e.to_string())?;
+                            mlis_ocr::verify::verify_recognition_model(&recognition)
+                                .map_err(|e| e.to_string())?;
+                        }
                         mlis_ocr::NativeOcr::load(&detection, &recognition)
                     })
                     .await

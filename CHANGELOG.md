@@ -38,6 +38,15 @@ stays available for PDF input (which the native engine can't parse) and the Tess
   (now a thin wrapper/type-alias over it) so `mlis-ocr` doesn't duplicate the same ~20-line pattern a
   second and third time (it needs the check for two files).
 
+### Fixed
+- **Both native backends now verify model integrity on the actual load path, not just in `mlis
+  doctor`.** Previously `NativeInferer::get_or_load` (`mlis-llm`'s GGUF) and `RustOcrEngine::get_or_load`
+  (`mlis-ocr`'s two `.rten` files) loaded weights straight into memory with no SHA-256 check at all —
+  verification only ran as an optional, separate preflight command. A tampered or corrupted-but-complete
+  file (or download) is now rejected before it's ever mapped into the process, honoring
+  `MLIS_MODEL_SKIP_VERIFY`/`MLIS_OCR_MODEL_SKIP_VERIFY` the same way `mlis doctor` already did. Found by
+  an Opus-assisted code review of this milestone's diff.
+
 ### Known limitations
 - `ocrs`'s out-of-the-box text recognition is not yet verified against this project's specimen
   corpus and, on the workspace's own low/medium-resolution samples, is not always clean enough to
