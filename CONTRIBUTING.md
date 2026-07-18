@@ -46,6 +46,28 @@ on Windows/macOS.
 - **No PII in logs or fixtures.** Use the public-domain specimens in `samples/`.
 - **One logical change per PR**, with a clear description. Reference issues where relevant.
 
+## Git workflow
+
+`main` is a protected branch: no direct pushes, no force-pushes, even for the repo owner. Every
+change lands via a pull request:
+
+```bash
+git fetch origin && git merge --ff-only origin/main   # start from current main, every time
+git checkout -b <topic>-branch
+# make changes, commit
+git push -u origin <topic>-branch
+gh pr create
+```
+
+The PR must show 4 green required checks before the merge button unlocks: `Rust (Linux, incl.
+native OCR)`, `Rust (macos-latest, default members)`, `Python inferer (gRPC smoke)`, and `Bridge
+(Rust client -> real Python inferer)`. No review approval is required (solo maintainer), but a PR
+and passing CI always are.
+
+If you work from more than one machine, always `git fetch && git merge --ff-only origin/main`
+(or `git pull --ff-only`) before branching off — this fails loudly instead of silently diverging
+if another client already pushed work you don't have yet.
+
 ## Commit sign-off
 
 Contributions are accepted under the project's [MIT license](LICENSE). By submitting a PR you certify
