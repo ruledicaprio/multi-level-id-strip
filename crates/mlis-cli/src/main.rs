@@ -263,14 +263,22 @@ async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Models are baked into the binary at compile time (`ocr-embedded` feature,
+/// musl release builds) — nothing on disk to check, and no filesystem/network
+/// access at all is exactly the point.
+#[cfg(all(feature = "ocr-native-rust", feature = "ocr-embedded"))]
+fn check_rust_ocr_models(_ok: &mut bool) {
+    println!("✅ OCR (rust) detection+recognition models embedded in binary");
+}
+
 /// Checks the default `rust` OCR engine's two `.rten` weight files: present
 /// under `MLIS_OCR_MODEL_DIR` (default `.`) and sha256-verified — unlike a
 /// pure reachability check, this engine can fail at startup on missing or
 /// corrupt weights.
-#[cfg(feature = "ocr-native-rust")]
+#[cfg(all(feature = "ocr-native-rust", not(feature = "ocr-embedded")))]
 type OcrModelVerifyFn = fn(&Path) -> Result<(), mlis_ocr::verify::VerifyError>;
 
-#[cfg(feature = "ocr-native-rust")]
+#[cfg(all(feature = "ocr-native-rust", not(feature = "ocr-embedded")))]
 fn check_rust_ocr_models(ok: &mut bool) {
     let model_dir = env::var("MLIS_OCR_MODEL_DIR").unwrap_or_else(|_| ".".into());
     let dir = Path::new(&model_dir);
