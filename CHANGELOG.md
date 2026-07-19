@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-07-19
+
+Tier-1 accuracy release: the corpus-measured Tier-1 hit rate (checksum-valid MRZ extraction, no
+LLM involved) went from **50% (3/6) to 100% (6/6)** on the MRZ-bearing specimens in `samples/`,
+with zero false positives on the three no-MRZ control images. This closes the headline limitation
+`docs/ARCHITECTURE.md` §8 has carried since v0.7.0 ("not yet reliably clean enough to reconstruct
+a checksum-valid MRZ line").
+
+### Added
+- **MRZ retry passes in `mlis-ocr`:** when the general full-page OCR pass yields no checksum-valid
+  MRZ, a second `ocrs` engine — recognition constrained to the ICAO charset (`A–Z 0–9 <`, making
+  filler misreads like `?`/`«` unrepresentable at the decoder level) with beam-search decoding —
+  re-reads preprocessed variants of the image and appends any MRZ-shaped lines to the output.
+  The ICAO check digits act as a perfect oracle: the loop stops at the first variant that
+  validates, and retries are additive-only, so Tier-2 input can never get worse. Recovered the
+  360×225 Serbian ID rear (TD1) and the Slovenian 2022 ID rear (TD1).
+- **`mlis-ocr::preprocess`** (new module, pure `image`-crate): bottom-45%-band crop (the MRZ zone
+  on every ICAO layout), Lanczos upscaling (capped at 5×), percentile contrast stretch, and Otsu
+  binarization — the same techniques `ocr-daemon`'s Tesseract path already applied, now available
+  to the default pure-Rust engine on every platform.
+- **Tier-1 corpus harness** (`crates/mlis-ocr/examples/mrz_corpus.rs`): the measurable OCR→MRZ
+  accuracy tool §8 said was missing — reports the per-sample hit/miss, the expected document
+  number from the checked-in ground truth, per-document latency, and the aggregate hit rate,
+  plus negative controls asserting the no-MRZ samples never hallucinate a valid MRZ.
+  `--dump` prints raw OCR text for misses.
+
+### Changed
+- **`mrz` OCR-repair tolerance:** `variants()` now accepts candidate lines up to 14 characters
+  short of the target length (was 8) — measured `ocrs` output loses 9+ trailing fillers from a
+  TD3 name line on a 600×421 scan. Padded candidates still have to prove themselves against the
+  check digits, so the wider net costs candidates, not correctness. Alone, this recovered the
+  Croatian specimen (its data line was already read perfectly).
+- **`mlis-ocr` now depends on `mrz`** (zero-dep, used only as the checksum oracle deciding
+  whether retry passes run). `NativeOcr` loads each `.rten` file twice (one per engine;
+  `rten::Model` is not `Clone`) — a one-off ~12 MB/model cost at process start.
+
 ## [1.0.0] — 2026-07-19
 
 Static musl release: a single `x86_64-unknown-linux-musl` binary bundling the pipeline, in-process

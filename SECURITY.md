@@ -5,14 +5,14 @@ Security is a first-class concern; this document describes the posture and how t
 
 ## Supported versions
 
-Solo-maintained project, patch releases only — the latest `1.0.x` release is the only supported
+Solo-maintained project, patch releases only — the latest `1.1.x` release is the only supported
 one. Pre-1.0 versions (roadmap milestones `v0.4.0` through `v0.9.0`) are unmaintained; upgrade to
-`1.0.x` for any security-relevant fix.
+`1.1.x` for any security-relevant fix.
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | ✅ |
-| < 1.0 | ❌ |
+| 1.1.x | ✅ |
+| < 1.1 | ❌ |
 
 ## Reporting a vulnerability
 
