@@ -20,17 +20,45 @@ crates/ocr-daemon   native Tesseract+Leptonica OCR engine (Linux/WSL only)
 ## Building & testing
 
 The default toolchain target is `x86_64-pc-windows-msvc`; if you don't have the MSVC linker (or on
-any OS), the simplest reproducible path is a Linux Rust container:
+any OS), the simplest reproducible path is a Linux Rust container. `docker/Dockerfile.builder`
+provides a reproducible one (replaces an earlier ad-hoc `docker commit`-built image), matching
+`.github/workflows/ci.yml`'s `rust` job's system deps plus the musl/Zig toolchain from v1.0.0:
 
 ```bash
-# needs: cmake, and (for ocr-daemon / native-ocr) clang + libtesseract/libleptonica
-cargo test --workspace                 # cross-platform crates
-cargo test -p ocr-daemon               # native OCR (Linux/WSL, tesseract installed)
-cargo build -p mlis-pipeline --features native-ocr   # wire in the native engine
+docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
+
+# Git Bash on Windows needs MSYS_NO_PATHCONV=1 so `-w /work` isn't mangled into a Windows path.
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
+  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
+  -w /work mlis-builder:latest bash -c "
+    cargo test --workspace                 # cross-platform crates
+    cargo test -p ocr-daemon               # native OCR (Linux/WSL, tesseract installed)
+    cargo build -p mlis-pipeline --features native-ocr   # wire in the native engine
+  "
 ```
 
 The native `ocr-daemon` is **Linux/WSL only** and excluded from `default-members`; CI must not build it
 on Windows/macOS.
+
+### Cross-compiling to musl locally
+
+`mlis-builder` ships `x86_64-unknown-linux-musl`'s Rust std, a pinned Zig (the `CC`/`CXX` for
+`llama-cpp-2`'s C++ build under musl), and `cargo-zigbuild` — see docs/ARCHITECTURE.md §10 for why
+Zig was chosen over `cross-rs`/manual `musl-gcc`:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
+  -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
+  -w /work mlis-builder:latest \
+  cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve \
+    --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+```
+
+`ocr-embedded` bakes both `.rten` OCR models into the binary at compile time (needs
+`text-detection.rten`/`text-recognition.rten` already present under `MLIS_OCR_MODEL_DIR`, default
+`.` — see `crates/mlis-ocr/build.rs`); omit it to keep the regular runtime-download OCR path. Verify
+the result actually links static: `file target/x86_64-unknown-linux-musl/release/mlis` should say
+"statically linked".
 
 ### Fuzzing (`mrz`)
 
