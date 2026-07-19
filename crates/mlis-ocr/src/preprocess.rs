@@ -13,9 +13,8 @@ use image::{GrayImage, RgbImage};
 
 /// Upscale target for the shorter side of a full-page retry pass. Below
 /// roughly this, `ocrs` recognition quality on MRZ glyphs degrades sharply
-/// (the ~300-DPI-equivalent heuristic `ocr-daemon`'s Tesseract path also
-/// uses, scaled down: `ocrs` normalizes internally, so past this point extra
-/// pixels stop helping).
+/// (the classic ~300-DPI-equivalent heuristic, scaled down: `ocrs`
+/// normalizes internally, so past this point extra pixels stop helping).
 const FULL_PAGE_MIN_DIM: u32 = 1000;
 
 /// Upscale target for the width of the bottom-band crop.
@@ -87,8 +86,7 @@ fn contrast_stretched(image: &RgbImage) -> RgbImage {
 
 /// Grayscale + Otsu global threshold, returned as RGB. The strongest variant
 /// on clean-but-tiny scans, the weakest on uneven lighting — which is why it
-/// runs as one candidate among several rather than unconditionally (the same
-/// method `ocr-daemon`'s Tesseract path applies unconditionally).
+/// runs as one candidate among several rather than unconditionally.
 fn binarized(image: &RgbImage) -> RgbImage {
     let gray = to_gray(image);
     let t = otsu_threshold(&gray);
@@ -134,9 +132,9 @@ fn percentile_bounds(gray: &GrayImage, lo_frac: f64, hi_frac: f64) -> (u8, u8) {
     (lo, hi.max(lo))
 }
 
-/// Otsu's global threshold from the 256-bin intensity histogram (same method
-/// as `ocr-daemon::preprocess::otsu_threshold`; duplicated because that crate
-/// only compiles on Linux/WSL against the Tesseract C stack).
+/// Otsu's global threshold from the 256-bin intensity histogram (inherited
+/// from the retired Tesseract engine's `preprocess::otsu_threshold` — the
+/// technique outlived the C dependency chain it came from).
 fn otsu_threshold(gray: &GrayImage) -> u8 {
     let mut hist = [0u32; 256];
     for p in gray.pixels() {

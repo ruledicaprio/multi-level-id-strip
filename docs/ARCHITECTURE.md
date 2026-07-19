@@ -10,11 +10,10 @@ The system is a **Rust-first pipeline with a deliberately narrow, swappable boun
 
 * **Deterministic MRZ Core (`mrz` crate, zero deps):** ICAO 9303 TD1/TD2/TD3 parsing with full 7-3-1 check-digit validation and checksum-verified OCR repair. Zero runtime dependencies, so the identical code compiles natively for the pipeline and to WebAssembly for the public browser demo.
 * **Pipeline Core (`mlis-pipeline` crate):** Owns the end-to-end sequence — OCR → Markdown persistence → Tier 1 MRZ validation → Tier 2 `InferBackend` fallback → JSON — behind a single `process_document()` entry point. Both binaries are thin wrappers around it. Concurrency control (a single-flight semaphore + an observable queue-depth counter) lives *here*, not in the backend, so the "one concurrent Tier-2 call" invariant holds. Deliberately license-agnostic — see [§6](#6-offline-cryptographic-licensing-v080) for where enforcement actually lives.
-* **OCR Engine (pluggable behind a trait — introduced in v0.7.0):** An `OcrEngine` trait ([`crates/mlis-pipeline/src/ocr.rs`](../crates/mlis-pipeline/src/ocr.rs)) abstracts text extraction. Two implementations exist today, selected at runtime via `MLIS_OCR_ENGINE`:
-  * **`RustOcrEngine`** (feature `ocr-native-rust`, **default**) — the [`mlis-ocr`](../crates/mlis-ocr/) crate loads two `.rten` weight files (text detection + recognition) via [`ocrs`](https://crates.io/crates/ocrs)/[`rten`](https://crates.io/crates/rten), fetching and SHA-256-verifying them automatically on first use, and keeps the engine warm in-process. Zero C/C++ dependencies, works unchanged on Windows.
-  * **`NativeEngine`** (feature `native-ocr`, Linux/WSL only) — the in-tree `ocr-daemon` engine (Tesseract + Leptonica, DPI normalization, orientation correction, deskew, Otsu binarization). Kept as an accuracy fallback with real confidence-scored orientation correction the brand-new `ocrs` engine doesn't yet have proven parity with.
+* **OCR Engine (pluggable behind a trait — introduced in v0.7.0):** An `OcrEngine` trait ([`crates/mlis-pipeline/src/ocr.rs`](../crates/mlis-pipeline/src/ocr.rs)) abstracts text extraction. One implementation exists since v1.2.0:
+  * **`RustOcrEngine`** (feature `ocr-native-rust`, **default and only**) — the [`mlis-ocr`](../crates/mlis-ocr/) crate loads two `.rten` weight files (text detection + recognition) via [`ocrs`](https://crates.io/crates/ocrs)/[`rten`](https://crates.io/crates/rten), fetching and SHA-256-verifying them automatically on first use, and keeps the engine warm in-process. Zero C/C++ dependencies, works unchanged on Windows. The Tesseract-based `ocr-daemon` fallback (`NativeEngine`, Linux/WSL only) was retired in v1.2.0: its justification was accuracy parity doubt about the then-new `ocrs` engine, and v1.1.0's measured 100% Tier-1 corpus hit rate — achieved by absorbing `ocr-daemon`'s own preprocessing techniques into `mlis-ocr` — closed that question.
 
-  Both engines are image-only. **Supported input formats:** JPEG, PNG, WebP, TIFF, BMP, GIF (whatever the `image` crate's default features decode) — covers Android's default camera formats and general use. **Not supported:** PDF (no OCR engine parses it as of v0.7.5 — see below) and HEIC/HEIF, Apple's default photo format since iOS 11 (no permissively-licensed pure-Rust decoder exists; the two that do are AGPL-3.0, which would force this MIT-licensed, commercially-offline-licensed binary to AGPL too — see [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like)). Both are rejected with a clear, actionable error rather than a silent or generic failure. In practice this is less limiting than it sounds: many iOS share/export flows already convert HEIC to JPEG automatically.
+  The engine is image-only. **Supported input formats:** JPEG, PNG, WebP, TIFF, BMP, GIF (whatever the `image` crate's default features decode) — covers Android's default camera formats and general use. **Not supported:** PDF (no OCR engine parses it as of v0.7.5 — see below) and HEIC/HEIF, Apple's default photo format since iOS 11 (no permissively-licensed pure-Rust decoder exists; the two that do are AGPL-3.0, which would force this MIT-licensed, commercially-offline-licensed binary to AGPL too — see [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like)). Both are rejected with a clear, actionable error rather than a silent or generic failure. In practice this is less limiting than it sounds: many iOS share/export flows already convert HEIC to JPEG automatically.
 * **Inference Engine (pluggable behind a trait — introduced in v0.6.0):** An `InferBackend` trait ([`crates/mlis-pipeline/src/infer.rs`](../crates/mlis-pipeline/src/infer.rs)) abstracts *how* Tier 2 turns OCR Markdown into a structured `Extraction`. One implementation exists today:
   * **`NativeInferer`** (feature `inferer-native`, default and, as of v0.7.5, the only backend) — the [`mlis-llm`](../crates/mlis-llm/) crate loads the quantized Qwen 2.5 GGUF once via [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) (Rust bindings to `llama.cpp`), verifies its SHA-256 before first use, and keeps it warm in-process for the life of the CLI or web-server process. No sidecar, no network hop, no second language runtime.
 
@@ -167,7 +166,33 @@ The headline architectural facts worth stating in this doc specifically (build o
 * **Fingerprint fallback:** stock Alpine ships no OS-level machine-id at all, so `mlis-license::fingerprint` persists a `/dev/urandom`-seeded id on first run (`/var/lib/mlis/instance-id`, override `MLIS_INSTANCE_ID_PATH`) rather than every such install colliding on one placeholder — see [§6](#6-offline-cryptographic-licensing-v080)'s threat model, unchanged in kind, just more robust in this one edge case.
 * **Non-goals, explicitly:** no Tesseract-under-musl (the C dependency chain — libjpeg/libpng/libtiff/zlib — was never worth cross-building), no macOS/Windows musl target, no GGUF embedding, no hardware-attestation fingerprinting (TPM/HSM).
 
-**From here, the project leaves numbered roadmap milestones behind.** Versioning moves to patch releases (`v1.0.1`, `v1.0.2`, …); see the "What's next" note at the end of CHANGELOG's `[1.0.0]` entry for the proposed next scope. `docker/docker-compose.yml` and `docker/Dockerfile.serve` remain as an optional, glibc-based convenience packaging path alongside the musl artifact — neither is required for any functional code path.
+### v1.2.0 — "dependency diet" (in progress)
+
+One numbered milestone earned its way back onto the roadmap: **every dependency the project
+sheds is surface it no longer has to secure, license-audit, cross-compile, or explain to a
+procurement department** — for an air-gapped, commercially-licensed binary, a short dependency
+list is a product feature, not housekeeping. Scope, in order:
+
+1. **Retire `ocr-daemon` (Tesseract/Leptonica) — done in this milestone's first PR.** The
+   pure-Rust engine's measured 100% Tier-1 corpus hit rate (v1.1.0, [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like))
+   closed the accuracy-parity question that justified the fallback. Removes the last C-library
+   OCR chain, the `native-ocr` feature, and the Tesseract packages from CI and the builder image.
+2. **Self-host the browser demo's OCR assets.** The demo pages currently load tesseract.js from
+   the jsDelivr CDN; vendoring the script, worker, LSTM cores, and `eng` traineddata (fetched +
+   SHA-256-pinned at Pages deploy time, mirroring the `.rten` pattern — not committed to git)
+   makes "nothing leaves the device" true of the page itself, not just guest data.
+3. **Spike: `ocrs`/`rten` compiled to WASM in the browser.** The end state is *one* OCR engine
+   everywhere — the exact `mlis-ocr` preprocessing and retry passes running client-side, deleting
+   tesseract.js entirely and the JS port of the preprocessing with it. Gated on measured
+   single-threaded WASM latency (GitHub Pages sends no COOP/COEP headers, so no wasm threads);
+   the spike ships only if a worst-case scan stays interactive.
+4. **Rust dependency audit.** `cargo tree` review of the remaining graph: trim `image` crate
+   default features to the formats actually accepted (the decoder list in
+   [`ocr.rs`](../crates/mlis-pipeline/src/ocr.rs)), re-justify every default feature pulled in by
+   `reqwest`/`axum`, and record the resulting dependency count as a tracked number in this
+   section rather than an untracked vibe.
+
+**Beyond v1.2.0, the project returns to patch releases.** Versioning moves to patch releases (`v1.0.1`, `v1.0.2`, …); see the "What's next" note at the end of CHANGELOG's `[1.0.0]` entry for the proposed next scope. `docker/docker-compose.yml` and `docker/Dockerfile.serve` remain as an optional, glibc-based convenience packaging path alongside the musl artifact — neither is required for any functional code path.
 
 ## 11. Getting Started
 See the [README quickstart](../README.md#-quickstart).

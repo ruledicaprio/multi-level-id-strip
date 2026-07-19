@@ -57,7 +57,7 @@ jobs:
       - name: Clippy (workspace, all targets)
         run: cargo clippy --workspace --all-targets
 
-      - name: Test (workspace, includes ocr-daemon)
+      - name: Test (workspace)
         run: cargo test --workspace
 
       # Not covered by the default-features workspace test above: the
@@ -72,13 +72,8 @@ jobs:
       - name: Native-rust OCR pipeline smoke test (real ocrs/rten models)
         run: cargo test -p mlis-pipeline --test rust_ocr_smoke -- --ignored
 
-      - name: Build with the native OCR engine
-        run: cargo build -p mlis-pipeline --features native-ocr
-
-      - name: Check OCR backend feature combinations (each must build alone)
-        run: |
-          cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
-          cargo check -p mlis-pipeline --no-default-features --features inferer-native,native-ocr
+      - name: Check the OCR backend feature builds alone
+        run: cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
 
       # mlis-license's default build (no `vendor`) must stay signing-free —
       # it's what mlis-cli/mlis-serve actually ship; `vendor` (the issuer
@@ -89,10 +84,9 @@ jobs:
           cargo check -p mlis-license
           cargo check -p mlis-license --features vendor
 
-  # Cross-platform crates only (no native ocr-daemon / no system OCR libs).
-  # `mlis-ocr` (ocrs/rten) is a default member, so this is real proof of the
-  # "zero Docker/Python, genuinely pure Rust, cross-platform" OCR claim —
-  # unlike ocr-daemon (Tesseract/Leptonica), it builds and tests here unchanged.
+  # Cross-platform proof: `mlis-ocr` (ocrs/rten) builds and tests here with
+  # no system OCR libraries at all — the "zero Docker/Python, genuinely pure
+  # Rust" claim, exercised on macOS on every push.
   rust-portable:
     name: Rust (${{ matrix.os }}, default members)
     strategy:
@@ -106,7 +100,7 @@ jobs:
       - name: Install cmake
         run: brew install cmake
       - uses: Swatinem/rust-cache@v2
-      - name: Test default members (excludes ocr-daemon; includes mlis-ocr)
+      - name: Test default members (includes mlis-ocr)
         run: cargo test
 
   # Real-model native LLM checks: downloads the ~1 GB GGUF, so this is opt-in
@@ -219,12 +213,6 @@ jobs:
       # only `ocr-embedded` needs to be requested explicitly here.
       - name: Build static musl release binaries (models embedded)
         run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve --features ocr-embedded
-
-      - name: Confirm no native-ocr/Tesseract in the musl build (negative check)
-        run: |
-          if cargo tree --target x86_64-unknown-linux-musl -p mlis-cli --features ocr-embedded | grep -qi ocr-daemon; then
-            echo "::error::ocr-daemon/Tesseract must not be part of the musl build" && exit 1
-          fi
 
       - name: Confirm the binaries are statically linked
         run: |

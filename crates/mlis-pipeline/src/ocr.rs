@@ -5,11 +5,10 @@
 //!
 //! [`RustOcrEngine`] (Cargo feature `ocr-native-rust`, **default**) runs the
 //! pure-Rust `ocrs`/`rten` engine in-process — no Docker, no Python, no C
-//! libraries, works unchanged on native Windows. [`NativeEngine`] (Cargo
-//! feature `native-ocr`, Linux/WSL only) drives the in-tree `ocr-daemon`
-//! (Tesseract + Leptonica) in-process, kept as an accuracy fallback with
-//! proven confidence-scored orientation correction. The engine is chosen at
-//! runtime by `MLIS_OCR_ENGINE` (`rust` | `native`).
+//! libraries, works unchanged on native Windows. It has been the only OCR
+//! engine since v1.2.0: the Tesseract-based `ocr-daemon` fallback (Linux/WSL
+//! only, C library chain) was retired once the pure-Rust engine's corpus-
+//! measured Tier-1 hit rate reached 100% in v1.1.0 — see CHANGELOG.
 //!
 //! Supported input: JPEG, PNG, WebP, TIFF, BMP, GIF (whatever the `image`
 //! crate's default features decode). Not supported: PDF (see above) and
@@ -23,10 +22,8 @@ use crate::PipelineError;
 use async_trait::async_trait;
 use std::path::Path;
 
-#[cfg(not(any(feature = "ocr-native-rust", feature = "native-ocr")))]
-compile_error!(
-    "mlis-pipeline requires at least one of the `ocr-native-rust` or `native-ocr` features"
-);
+#[cfg(not(feature = "ocr-native-rust"))]
+compile_error!("mlis-pipeline requires the `ocr-native-rust` feature");
 
 /// Produces Markdown / plain text from a local image.
 #[async_trait]
@@ -36,49 +33,11 @@ pub trait OcrEngine: Send + Sync {
     fn describe(&self) -> String;
 }
 
-/// Native Tesseract + Leptonica engine (Linux/WSL only, `native-ocr` feature).
-/// Runs the blocking OCR on a dedicated thread so it never stalls the async
-/// runtime. Image-focused, which is no longer a limitation — mlis is
-/// image-only as of v0.7.5.
-#[cfg(feature = "native-ocr")]
-pub struct NativeEngine {
-    lang: String,
-}
-
-#[cfg(feature = "native-ocr")]
-impl NativeEngine {
-    pub fn new(lang: impl Into<String>) -> Self {
-        Self { lang: lang.into() }
-    }
-
-    pub fn from_env() -> Self {
-        Self::new(std::env::var("MLIS_OCR_LANG").unwrap_or_else(|_| "eng".into()))
-    }
-}
-
-#[cfg(feature = "native-ocr")]
-#[async_trait]
-impl OcrEngine for NativeEngine {
-    async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError> {
-        let path = input.to_path_buf();
-        let lang = self.lang.clone();
-        tokio::task::spawn_blocking(move || ocr_daemon::image_to_text(&path, &lang))
-            .await
-            .map_err(|e| PipelineError::Ocr(format!("native OCR task panicked: {e}")))?
-            .map_err(|e| PipelineError::Ocr(format!("native OCR: {e}")))
-    }
-
-    fn describe(&self) -> String {
-        format!("native ocr-daemon (tesseract, lang={})", self.lang)
-    }
-}
-
 /// Pure-Rust `ocrs`/`rten` engine (feature `ocr-native-rust`, **default**).
 /// Lazy-loads both `.rten` weight files on first call and keeps the engine
 /// warm for the process lifetime, mirroring `NativeInferer` in `infer.rs`.
 /// PDF and HEIC/HEIF input are rejected with a clear, actionable message
 /// (see [`OcrEngine::to_markdown`] below) rather than a generic failure.
-#[cfg(feature = "ocr-native-rust")]
 mod rust_ocr {
     use super::*;
     use std::path::PathBuf;
@@ -257,55 +216,24 @@ mod rust_ocr {
         }
     }
 }
-#[cfg(feature = "ocr-native-rust")]
 pub use rust_ocr::RustOcrEngine;
 
 /// Default model directory when `MLIS_OCR_MODEL_DIR` is unset — the repo root.
-#[cfg(feature = "ocr-native-rust")]
 const DEFAULT_OCR_MODEL_DIR: &str = ".";
 
-/// Build the OCR engine selected by `MLIS_OCR_ENGINE` (`rust` default,
-/// pure-Rust `ocrs`/`rten`; `native` for the Linux-only Tesseract engine).
-/// Falls back to whichever engine *is* compiled in (with a warning) if the
-/// requested one isn't — at least one is always compiled in, enforced by the
-/// `compile_error!` at the top of this file.
+/// Build the OCR engine. `MLIS_OCR_ENGINE` survives for compatibility, but
+/// `rust` is the only engine since v1.2.0 (the Tesseract-based `native`
+/// engine was retired) — any other value warns and uses the pure-Rust engine.
 pub fn engine_from_env() -> Box<dyn OcrEngine> {
-    match std::env::var("MLIS_OCR_ENGINE")
-        .unwrap_or_else(|_| "rust".into())
-        .as_str()
-    {
-        "native" => native_choice(),
-        _ => rust_choice(),
+    let requested = std::env::var("MLIS_OCR_ENGINE").unwrap_or_else(|_| "rust".into());
+    if requested != "rust" {
+        eprintln!(
+            "[mlis] MLIS_OCR_ENGINE={requested} is no longer available (the Tesseract \
+             `native` engine was retired in v1.2.0) — using the pure-Rust engine"
+        );
     }
-}
-
-#[cfg(feature = "native-ocr")]
-fn native_choice() -> Box<dyn OcrEngine> {
-    Box::new(NativeEngine::from_env())
-}
-
-#[cfg(not(feature = "native-ocr"))]
-fn native_choice() -> Box<dyn OcrEngine> {
-    eprintln!(
-        "[mlis] MLIS_OCR_ENGINE=native requested but this build lacks the `native-ocr` \
-         feature (Linux/WSL only) — using the pure-Rust engine instead"
-    );
-    rust_choice()
-}
-
-#[cfg(feature = "ocr-native-rust")]
-fn rust_choice() -> Box<dyn OcrEngine> {
     let model_dir =
         std::env::var("MLIS_OCR_MODEL_DIR").unwrap_or_else(|_| DEFAULT_OCR_MODEL_DIR.into());
     let auto_download = std::env::var("MLIS_OCR_AUTO_DOWNLOAD").as_deref() != Ok("0");
     Box::new(RustOcrEngine::new(model_dir, auto_download))
-}
-
-#[cfg(not(feature = "ocr-native-rust"))]
-fn rust_choice() -> Box<dyn OcrEngine> {
-    eprintln!(
-        "[mlis] MLIS_OCR_ENGINE=rust (default) requested but this build lacks the \
-         `ocr-native-rust` feature — using the native Tesseract engine instead"
-    );
-    native_choice()
 }

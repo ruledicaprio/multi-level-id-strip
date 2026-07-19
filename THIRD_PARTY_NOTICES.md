@@ -35,7 +35,6 @@ All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 | MIT OR Apache-2.0 (RustCrypto / dalek-cryptography) | `sha2`, `aes-gcm`, `base64`, `ed25519-dalek` |
 | MIT OR Apache-2.0 | `zeroize` (memory-wiping on drop, v0.9.0) |
 | ISC AND (Apache-2.0 OR ISC) AND OpenSSL | `aws-lc-rs` / `aws-lc-sys` (default rustls crypto provider) |
-| Apache-2.0 (wraps C libs) | `leptess` → **Tesseract** (Apache-2.0) + **Leptonica** (BSD-2-Clause) |
 | *(unverified — see note above)* | `llama-cpp-2` → **llama.cpp**, `ocrs`, `rten` |
 | MIT / Apache-2.0 | `wasm-bindgen` (WASM demo) |
 
