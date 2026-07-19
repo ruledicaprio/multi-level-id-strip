@@ -181,7 +181,7 @@ plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptog
 
 > **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The default `rust` OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows. The Tesseract-based `native` OCR engine (`ocr-daemon`) is Linux/WSL-only.
 >
-> **OCR accuracy note:** `ocrs` is brand-new to this project and has not yet been benchmarked against the field-accuracy parity harness that exists for Tier 2. On this workspace's own low/medium-resolution specimen samples, its out-of-the-box text recognition is not always clean enough to reconstruct a checksum-valid MRZ line (filler runs get mis-recognized or truncated) — see `docs/ARCHITECTURE.md`'s honest limitations section. When Tier 1 misses, Tier 2 still runs as usual.
+> **OCR accuracy note (v1.1.0):** Tier-1 extraction hits **6/6 (100%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/mlis-ocr/examples/mrz_corpus.rs`](crates/mlis-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual.
 
 ## 📦 Static musl release (v1.0.0)
 
