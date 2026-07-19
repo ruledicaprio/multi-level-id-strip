@@ -27,7 +27,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.5"
 edition = "2021"
 authors = ["Rusmir Skopljak <rusmirskopljak@gmail.com>"]
 license = "MIT"
@@ -35,7 +35,6 @@ repository = "https://github.com/ruledicaprio/multi-level-id-strip"
 description = "Air-gapped, multi-level identity-document extraction: deterministic ICAO 9303 MRZ validation with a local LLM fallback — zero cloud calls."
 
 [workspace.dependencies]
-docling_rs = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Pulled in directly by mlis-ocr; ocr-daemon has its own unpinned `image = "0.25"`.
 image = "0.25"

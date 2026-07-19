@@ -36,11 +36,12 @@
 </head>
 <body>
 <h1>📄 mlis</h1>
-<p class="muted">Air-gapped document pipeline: docling-serve OCR → Markdown → ICAO 9303 MRZ validation → local Qwen 2.5 GGUF fallback → structured JSON. Nothing leaves this machine.</p>
+<p class="muted">Air-gapped document pipeline: pure-Rust OCR → Markdown → ICAO 9303 MRZ validation → local Qwen 2.5 GGUF fallback → structured JSON. Nothing leaves this machine.</p>
 <p class="muted">🔒 <strong>No data is persistent on any server:</strong> uploads are processed in memory on this host and every working file is deleted the moment the response is sent. Images are downscaled in your browser before upload.</p>
+<p class="muted">📷 Image formats only (JPEG, PNG, WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported.</p>
 
 <form id="form">
-  <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.bmp,.webp" required>
+  <input type="file" id="file" accept=".jpg,.jpeg,.png,.tiff,.bmp,.webp,.gif" required>
   <button id="go" type="submit">Extract</button>
   <span id="status" class="muted"></span>
 </form>

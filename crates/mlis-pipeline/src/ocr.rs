@@ -1,22 +1,34 @@
 //! OCR engine abstraction: the pipeline gets Markdown from *some* engine.
+//! Image-only as of v0.7.5 — the Docker-based `docling-serve` engine (the
+//! project's only PDF-capable path) was retired along with PDF input support;
+//! see `CHANGELOG.md`.
 //!
 //! [`RustOcrEngine`] (Cargo feature `ocr-native-rust`, **default**) runs the
 //! pure-Rust `ocrs`/`rten` engine in-process — no Docker, no Python, no C
-//! libraries, works unchanged on native Windows. Image-only: `ocrs` has no
-//! PDF parsing. [`DoclingEngine`] (the containerized `docling-serve` service)
-//! is the portable fallback and the only engine that handles PDFs.
-//! [`NativeEngine`] (Cargo feature `native-ocr`, Linux/WSL only) drives the
-//! in-tree `ocr-daemon` (Tesseract + Leptonica) in-process, kept as an
-//! accuracy fallback with proven confidence-scored orientation correction.
-//! The engine is chosen at runtime by `MLIS_OCR_ENGINE` (`rust` | `docling` |
-//! `native`).
+//! libraries, works unchanged on native Windows. [`NativeEngine`] (Cargo
+//! feature `native-ocr`, Linux/WSL only) drives the in-tree `ocr-daemon`
+//! (Tesseract + Leptonica) in-process, kept as an accuracy fallback with
+//! proven confidence-scored orientation correction. The engine is chosen at
+//! runtime by `MLIS_OCR_ENGINE` (`rust` | `native`).
+//!
+//! Supported input: JPEG, PNG, WebP, TIFF, BMP, GIF (whatever the `image`
+//! crate's default features decode). Not supported: PDF (see above) and
+//! HEIC/HEIF (Apple's default photo format) — no permissively-licensed
+//! pure-Rust decoder exists yet (the two that do are AGPL-3.0), so HEIC/HEIF
+//! input is rejected with a clear message rather than silently failing or
+//! pulling in AGPL code. See `docs/ARCHITECTURE.md`'s "Supported input
+//! formats" note.
 
 use crate::PipelineError;
 use async_trait::async_trait;
-use docling_rs::DoclingClient;
 use std::path::Path;
 
-/// Produces Markdown / plain text from a local image or PDF.
+#[cfg(not(any(feature = "ocr-native-rust", feature = "native-ocr")))]
+compile_error!(
+    "mlis-pipeline requires at least one of the `ocr-native-rust` or `native-ocr` features"
+);
+
+/// Produces Markdown / plain text from a local image.
 #[async_trait]
 pub trait OcrEngine: Send + Sync {
     async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError>;
@@ -24,50 +36,10 @@ pub trait OcrEngine: Send + Sync {
     fn describe(&self) -> String;
 }
 
-/// Default engine: the containerized `docling-serve` OCR service. Layout-aware,
-/// handles PDFs, runs on every platform.
-pub struct DoclingEngine {
-    client: DoclingClient,
-    url: String,
-}
-
-impl DoclingEngine {
-    pub fn new(url: impl Into<String>) -> Self {
-        let url = url.into();
-        Self {
-            client: DoclingClient::new(url.clone()),
-            url,
-        }
-    }
-
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-}
-
-#[async_trait]
-impl OcrEngine for DoclingEngine {
-    async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError> {
-        let result = self
-            .client
-            .convert_file(&[input], None, None)
-            .await
-            .map_err(|e| PipelineError::Ocr(format!("docling-serve: {e:?}")))?;
-        result
-            .document
-            .md_content
-            .clone()
-            .ok_or_else(|| PipelineError::NoMarkdown(format!("{:?}", result.errors)))
-    }
-
-    fn describe(&self) -> String {
-        format!("docling-serve @ {}", self.url)
-    }
-}
-
 /// Native Tesseract + Leptonica engine (Linux/WSL only, `native-ocr` feature).
 /// Runs the blocking OCR on a dedicated thread so it never stalls the async
-/// runtime. Image-focused (no PDF); use docling for PDFs.
+/// runtime. Image-focused, which is no longer a limitation — mlis is
+/// image-only as of v0.7.5.
 #[cfg(feature = "native-ocr")]
 pub struct NativeEngine {
     lang: String,
@@ -104,7 +76,8 @@ impl OcrEngine for NativeEngine {
 /// Pure-Rust `ocrs`/`rten` engine (feature `ocr-native-rust`, **default**).
 /// Lazy-loads both `.rten` weight files on first call and keeps the engine
 /// warm for the process lifetime, mirroring `NativeInferer` in `infer.rs`.
-/// Image-only — PDF input is rejected with a pointer to `MLIS_OCR_ENGINE=docling`.
+/// PDF and HEIC/HEIF input are rejected with a clear, actionable message
+/// (see [`OcrEngine::to_markdown`] below) rather than a generic failure.
 #[cfg(feature = "ocr-native-rust")]
 mod rust_ocr {
     use super::*;
@@ -179,13 +152,32 @@ mod rust_ocr {
             })
     }
 
+    /// True if `path`'s extension is HEIC/HEIF — checked ahead of the general
+    /// image allowlist so the rejection message names the real reason (no
+    /// permissively-licensed pure-Rust decoder) instead of a generic
+    /// "unsupported format" error.
+    fn looks_like_heic(path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .is_some_and(|e| matches!(e.as_str(), "heic" | "heif"))
+    }
+
     #[async_trait]
     impl OcrEngine for RustOcrEngine {
         async fn to_markdown(&self, input: &Path) -> Result<String, PipelineError> {
+            if looks_like_heic(input) {
+                return Err(PipelineError::Ocr(
+                    "HEIC/HEIF input is not yet supported — no permissively-licensed \
+                     pure-Rust decoder exists (the available ones are AGPL-3.0). Convert to \
+                     JPEG or PNG first."
+                        .into(),
+                ));
+            }
             if !looks_like_image(input) {
                 return Err(PipelineError::Ocr(
-                    "PDF input requires MLIS_OCR_ENGINE=docling — the native-rust engine is \
-                     image-only"
+                    "PDF input is not supported — mlis is image-only as of v0.7.5. Convert \
+                     to an image first."
                         .into(),
                 ));
             }
@@ -201,6 +193,54 @@ mod rust_ocr {
             format!("pure-rust ocr (ocrs/rten) @ {}", self.model_dir.display())
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // These don't need real model files: both rejections happen on the
+        // extension check, before `get_or_load()` ever runs — the path need
+        // not even exist.
+
+        #[tokio::test]
+        async fn rejects_pdf_with_an_actionable_message() {
+            let engine = RustOcrEngine::new(".", false);
+            let err = engine
+                .to_markdown(Path::new("document.pdf"))
+                .await
+                .expect_err("PDF input must be rejected, not silently processed");
+            let PipelineError::Ocr(msg) = err else {
+                panic!("expected PipelineError::Ocr");
+            };
+            assert!(msg.contains("PDF"), "message should name PDF: {msg}");
+            assert!(
+                msg.contains("image-only"),
+                "message should explain why: {msg}"
+            );
+        }
+
+        #[tokio::test]
+        async fn rejects_heic_with_an_actionable_message() {
+            let engine = RustOcrEngine::new(".", false);
+            for ext in ["heic", "heif", "HEIC"] {
+                let err = engine
+                    .to_markdown(Path::new(&format!("photo.{ext}")))
+                    .await
+                    .expect_err("HEIC/HEIF input must be rejected, not silently processed");
+                let PipelineError::Ocr(msg) = err else {
+                    panic!("expected PipelineError::Ocr");
+                };
+                assert!(
+                    msg.contains("HEIC") || msg.contains("HEIF"),
+                    "message should name HEIC/HEIF: {msg}"
+                );
+                assert!(
+                    msg.contains("JPEG") || msg.contains("PNG"),
+                    "message should suggest a conversion target: {msg}"
+                );
+            }
+        }
+    }
 }
 #[cfg(feature = "ocr-native-rust")]
 pub use rust_ocr::RustOcrEngine;
@@ -209,40 +249,37 @@ pub use rust_ocr::RustOcrEngine;
 #[cfg(feature = "ocr-native-rust")]
 const DEFAULT_OCR_MODEL_DIR: &str = ".";
 
-/// Build the OCR engine selected by `MLIS_OCR_ENGINE` (`rust` default;
-/// `docling` for the containerized service, which is required for PDFs;
-/// `native` for the Linux-only Tesseract engine). Falls back to docling (with
-/// a warning) if `rust` or `native` is requested from a build lacking the
-/// corresponding feature.
+/// Build the OCR engine selected by `MLIS_OCR_ENGINE` (`rust` default,
+/// pure-Rust `ocrs`/`rten`; `native` for the Linux-only Tesseract engine).
+/// Falls back to whichever engine *is* compiled in (with a warning) if the
+/// requested one isn't — at least one is always compiled in, enforced by the
+/// `compile_error!` at the top of this file.
 pub fn engine_from_env() -> Box<dyn OcrEngine> {
-    let docling_url =
-        std::env::var("DOCLING_URL").unwrap_or_else(|_| "http://localhost:5001".into());
     match std::env::var("MLIS_OCR_ENGINE")
         .unwrap_or_else(|_| "rust".into())
         .as_str()
     {
-        "native" => native_or_fallback(docling_url),
-        "docling" => Box::new(DoclingEngine::new(docling_url)),
-        _ => rust_or_fallback(docling_url),
+        "native" => native_choice(),
+        _ => rust_choice(),
     }
 }
 
 #[cfg(feature = "native-ocr")]
-fn native_or_fallback(_docling_url: String) -> Box<dyn OcrEngine> {
+fn native_choice() -> Box<dyn OcrEngine> {
     Box::new(NativeEngine::from_env())
 }
 
 #[cfg(not(feature = "native-ocr"))]
-fn native_or_fallback(docling_url: String) -> Box<dyn OcrEngine> {
+fn native_choice() -> Box<dyn OcrEngine> {
     eprintln!(
-        "[mlis] MLIS_OCR_ENGINE=native but this build lacks the `native-ocr` feature \
-         (Linux/WSL only) — falling back to docling-serve"
+        "[mlis] MLIS_OCR_ENGINE=native requested but this build lacks the `native-ocr` \
+         feature (Linux/WSL only) — using the pure-Rust engine instead"
     );
-    Box::new(DoclingEngine::new(docling_url))
+    rust_choice()
 }
 
 #[cfg(feature = "ocr-native-rust")]
-fn rust_or_fallback(_docling_url: String) -> Box<dyn OcrEngine> {
+fn rust_choice() -> Box<dyn OcrEngine> {
     let model_dir =
         std::env::var("MLIS_OCR_MODEL_DIR").unwrap_or_else(|_| DEFAULT_OCR_MODEL_DIR.into());
     let auto_download = std::env::var("MLIS_OCR_AUTO_DOWNLOAD").as_deref() != Ok("0");
@@ -250,10 +287,10 @@ fn rust_or_fallback(_docling_url: String) -> Box<dyn OcrEngine> {
 }
 
 #[cfg(not(feature = "ocr-native-rust"))]
-fn rust_or_fallback(docling_url: String) -> Box<dyn OcrEngine> {
+fn rust_choice() -> Box<dyn OcrEngine> {
     eprintln!(
-        "[mlis] MLIS_OCR_ENGINE=rust (default) but this build lacks the `ocr-native-rust` \
-         feature — falling back to docling-serve"
+        "[mlis] MLIS_OCR_ENGINE=rust (default) requested but this build lacks the \
+         `ocr-native-rust` feature — using the native Tesseract engine instead"
     );
-    Box::new(DoclingEngine::new(docling_url))
+    native_choice()
 }

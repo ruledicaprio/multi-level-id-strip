@@ -3,40 +3,32 @@
 `multi-level-id-strip` (MIT) bundles and builds on third-party open-source components.
 All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 
-> This file is hand-curated from the dependency set at v0.4.0. Regenerate the
-> authoritative, version-exact list before a release:
+> This file is hand-curated and, as of v0.7.5, still not fully current for the native LLM/OCR
+> deps added in v0.6.0/v0.7.0 (`llama-cpp-2`, `ocrs`, `rten`) — verify their licenses before
+> relying on this list. Regenerate the authoritative, version-exact list before a release:
 >
 > ```bash
-> # Rust
 > cargo install cargo-about cargo-deny
 > cargo about generate about.hbs > THIRD_PARTY_NOTICES.md
 > cargo deny check licenses           # fail the build on any surprise copyleft
->
-> # Python (from ./python)
-> pip install pip-licenses && pip-licenses --format=markdown
 > ```
+>
+> The legacy Python inferer sidecar (`grpcio`, `pydantic`, `llama-cpp-python`) and `docling_rs`
+> were removed in v0.7.5 along with the gRPC backend and the `docling-serve` OCR engine — no
+> Python dependencies remain in this project at all.
 
 ## Rust crates
 
 | License | Crates (direct) |
 | --- | --- |
-| MIT OR Apache-2.0 | `tokio`, `tokio-stream`, `axum`, `axum-server`, `tower`, `tower-http`, `hyper`, `hyper-util`, `serde`, `serde_json`, `tonic`, `tonic-build`, `prost`, `rustls`, `image`, `thiserror`, `async-trait`, `uuid`, `getrandom` |
+| MIT OR Apache-2.0 | `tokio`, `axum`, `axum-server`, `tower`, `tower-http`, `hyper`, `hyper-util`, `serde`, `serde_json`, `rustls`, `image`, `thiserror`, `async-trait`, `uuid`, `getrandom` |
 | MIT OR Apache-2.0 (RustCrypto) | `sha2`, `aes-gcm`, `base64` |
 | ISC AND (Apache-2.0 OR ISC) AND OpenSSL | `aws-lc-rs` / `aws-lc-sys` (default rustls crypto provider) |
 | Apache-2.0 (wraps C libs) | `leptess` → **Tesseract** (Apache-2.0) + **Leptonica** (BSD-2-Clause) |
-| MIT | `docling_rs` |
+| *(unverified — see note above)* | `llama-cpp-2` → **llama.cpp**, `ocrs`, `rten` |
 | MIT / Apache-2.0 | `wasm-bindgen` (WASM demo) |
 
 The Rust toolchain and `std` are dual MIT/Apache-2.0 (© The Rust Project Developers).
-
-## Python packages (inferer sidecar)
-
-| Package | License |
-| --- | --- |
-| `grpcio`, `grpcio-tools` | Apache-2.0 |
-| `protobuf` | BSD-3-Clause |
-| `pydantic` | MIT |
-| `llama-cpp-python` → **llama.cpp** | MIT |
 
 ## Frontend & models
 

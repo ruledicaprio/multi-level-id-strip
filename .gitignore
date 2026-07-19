@@ -1,15 +1,6 @@
 # Rust
 target/
 
-# Python
-.venv/
-__pycache__/
-
-# Generated gRPC stubs (produced by python/generate_grpc.py / Docker build)
-python/inferer/inferer_pb2.py
-python/inferer/inferer_pb2_grpc.py
-python/inferer/inferer_pb2.pyi
-
 # Local LLM weights (~1 GB — download per README)
 *.gguf
 

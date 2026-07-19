@@ -1,9 +1,9 @@
 //! Canonical extraction schema shared across the mlis workspace.
 //!
-//! Every producer — Tier 1 (deterministic ICAO 9303 MRZ), Tier 2 (LLM sidecar),
-//! and the browser WASM demo — emits this same [`Extraction`] shape, so every
-//! consumer (CLI, web app, on-disk JSON artifacts, the gRPC inferer contract)
-//! sees one contract instead of several ad-hoc field lists.
+//! Every producer — Tier 1 (deterministic ICAO 9303 MRZ), Tier 2 (in-process
+//! LLM), and the browser WASM demo — emits this same [`Extraction`] shape, so
+//! every consumer (CLI, web app, on-disk JSON artifacts) sees one contract
+//! instead of several ad-hoc field lists.
 //!
 //! Later phases add crypto/audit helpers to this crate; the schema lives here
 //! because it is the one type the whole system agrees on.

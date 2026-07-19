@@ -9,9 +9,10 @@
 //! cross-platform crates explicitly; the pipeline reaches it only through the
 //! `native-ocr` feature of `mlis-pipeline`.
 //!
-//! It is deliberately image-focused (no PDF): `docling-serve` remains the engine
-//! for PDFs and layout-heavy documents. The output is plain recognized text,
-//! which the same [`mrz`](../mrz) scanner and LLM tier consume as "Markdown".
+//! It is deliberately image-focused — mlis is image-only as of v0.7.5, so this
+//! is no longer a limitation relative to the default `rust` engine. The
+//! output is plain recognized text, which the same [`mrz`](../mrz) scanner
+//! and LLM tier consume as "Markdown".
 
 pub mod preprocess;
 

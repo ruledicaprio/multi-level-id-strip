@@ -83,3 +83,50 @@ async fn rust_ocr_engine_reaches_a_terminal_pipeline_result() {
         "expected an extraction from one of the two tiers"
     );
 }
+
+/// Added in v0.7.5 alongside dropping PDF/docling support: proves JPEG, PNG,
+/// and WebP all flow through the OCR engine end-to-end, not just that
+/// `image::load` accepts them in isolation — these three plus TIFF/BMP/GIF
+/// (untested here, same `image` crate decode path) are the phone-common
+/// formats this milestone confirmed support for. See `docs/ARCHITECTURE.md`'s
+/// "Supported input formats" note. HEIC/HEIF is deliberately NOT covered here
+/// — it's meant to be rejected, not decoded (see `ocr.rs`'s `looks_like_heic`).
+#[tokio::test]
+#[ignore = "needs the real .rten model files (~12 MB) at the repo root — see \
+            CI's `rust` job, or download text-detection.rten/text-recognition.rten \
+            from https://ocrs-models.s3-accelerate.amazonaws.com/"]
+async fn rust_ocr_engine_handles_common_phone_image_formats() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let src = repo_root.join("samples/Croatian_passport_data_page.jpg");
+    let img = image::open(&src).expect("sample image decodes");
+
+    for (format, ext) in [
+        (image::ImageFormat::Jpeg, "jpg"),
+        (image::ImageFormat::Png, "png"),
+        (image::ImageFormat::WebP, "webp"),
+    ] {
+        let ocr = RustOcrEngine::new(repo_root.clone(), false);
+        let pipeline = Pipeline::new(Box::new(ocr), Box::new(StubInferer));
+
+        let dst = std::env::temp_dir().join(format!(
+            "mlis-pipeline-format-smoke-{}-{ext}.{ext}",
+            std::process::id()
+        ));
+        img.save_with_format(&dst, format)
+            .unwrap_or_else(|e| panic!("re-encoding sample to {ext} should succeed: {e}"));
+
+        let result = pipeline.process_document(&dst).await;
+
+        std::fs::remove_file(&dst).ok();
+        std::fs::remove_file(dst.with_extension("md")).ok();
+        std::fs::remove_file(dst.with_extension("json")).ok();
+
+        let result = result.unwrap_or_else(|e| {
+            panic!("{ext} input should reach a terminal result, not an OCR-stage error: {e}")
+        });
+        assert!(
+            !result.markdown.is_empty(),
+            "expected non-empty OCR markdown output for {ext}"
+        );
+    }
+}

@@ -4,6 +4,51 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] — 2026-07-19
+
+Pure-Rust, image-only pipeline: the legacy gRPC Tier-2 backend and the Docker-based
+`docling-serve` OCR engine are both **deleted outright**, not just made non-default. Docker and
+Python are no longer required for any functional code path. **This also means PDF input is no
+longer supported** — `docling-serve` was the only engine that parsed it, and `ocrs` (the default
+OCR engine since v0.7.0) is image-only. The `inferer-grpc` feature's own code comment stated it
+would be kept "for one release past `inferer-native` shipping" (v0.6.0); v0.7.0 was that release,
+so this milestone is the follow-through on that stated plan, not a surprise removal. Shrinks the
+dependency/attack surface the v0.8.0 licensing work and the eventual v1.0.0 musl static build must
+both carry.
+
+### Removed
+- **gRPC Tier-2 backend** (`GrpcInferer`, Cargo feature `inferer-grpc`): `tonic`/`prost` deps,
+  `proto/inferer.proto`, the entire `python/inferer` sidecar package and its gRPC codegen tooling,
+  `docker/Dockerfile.inferer` + `entrypoint-inferer.sh`, and the `bridge_e2e.rs` cross-language
+  test. **API break:** the `GrpcInferer` type and `inferer-grpc` feature no longer exist; anyone
+  building against them directly needs to switch to the (now sole) native backend.
+- **`docling-serve` OCR engine** (`DoclingEngine`, `MLIS_OCR_ENGINE=docling`) and its
+  `docling_rs` dependency. **This removes PDF input support entirely** — no remaining OCR engine
+  parses PDF. The OCR engine choice is now a two-way `rust` (default) / `native` match; a build
+  with neither OCR feature enabled now fails to compile with a clear `compile_error!` instead of
+  silently falling back to a Docker service that no longer exists.
+- CI: the `python` (gRPC smoke) and `bridge` (cross-language e2e) jobs, and their required-status-
+  check entries in branch protection. `protobuf-compiler`/`protobuf` dropped from the Linux and
+  macOS job dependency installs (no longer needed without `tonic-build`).
+- `docker/docker-compose.yml`'s `docling` and `inferer` services; `docker/Dockerfile.serve` no
+  longer installs `protobuf-compiler`. The compose file now only builds/runs `mlis-serve` — Docker
+  is entirely optional packaging, not a functional dependency, as of this release.
+
+### Added
+- **HEIC/HEIF rejection.** Detected by extension and rejected with a clear, actionable error
+  ("convert to JPEG or PNG first") rather than a silent or generic OCR failure. No permissively-
+  licensed pure-Rust HEIC/HEIF decoder exists — the two that do (`imazen/heic`,
+  `ente-io/heic-decoder`) are both AGPL-3.0, which would force this MIT-licensed project (and the
+  offline-licensing model planned for v0.8.0) to AGPL too. Revisiting this via a commercial
+  license or an in-house permissive decoder is an open follow-up, not a rejected idea.
+- **Format-coverage tests.** `mlis-pipeline`'s OCR smoke test now also proves JPEG, PNG, and WebP
+  all flow through the pure-Rust OCR engine end-to-end (previously only JPEG was exercised); fast
+  unit tests cover the PDF/HEIC rejection paths without needing the real `.rten` model files.
+
+### Known limitations
+- No PDF support (see Removed, above) and no HEIC/HEIF support (see Added, above). Both are
+  deliberate scope cuts for this release, not oversights.
+
 ## [0.7.0] — 2026-07-18
 
 Native Tier-1 OCR: a pure-Rust `ocrs`/`rten` engine now runs in-process, no `docling-serve` Docker

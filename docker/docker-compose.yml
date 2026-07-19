@@ -1,72 +1,23 @@
-# Legacy full mlis stack: OCR (docling-serve, CPU) + LLM inferer (gRPC, GPU) + web app.
-# The default `mlis` binary needs neither service any more — Tier-0 OCR
-# defaults to the in-process `ocrs`/`rten` engine (crate `mlis-ocr`) and Tier-2
-# inference defaults to the in-process GGUF (crate `mlis-llm`). This compose
-# file exists for: (a) PDF input, which the native OCR engine cannot parse
-# (`ocrs` is image-only) and still needs docling-serve, and (b) the legacy
-# gRPC sidecar path, kept one release past `inferer-native` shipping. The
-# deliberate CPU/GPU split keeps a small-VRAM card from OOM-ing (see
-# docs/ARCHITECTURE.md). Run from the repo root: `docker compose -f docker/docker-compose.yml up`.
+# Optional container packaging for the web app. The default `mlis`/`mlis-serve`
+# binaries need no other services: OCR defaults to the in-process `ocrs`/`rten`
+# engine (crate `mlis-ocr`) and Tier-2 inference defaults to the in-process
+# GGUF (crate `mlis-llm`). As of v0.7.5, Docker is no longer required for any
+# functional code path — this compose file exists purely as a convenient way
+# to build/run the containerized `mlis-serve` image; the legacy `docling`
+# (PDF OCR) and `inferer` (gRPC Tier-2 sidecar) services were retired in
+# v0.7.5 along with PDF input support — see CHANGELOG.md.
+# Run from the repo root: `docker compose -f docker/docker-compose.yml up`.
 name: mlis
 
 services:
-  # Legacy/PDF-only OCR: containerized docling-serve (prebuilt image), pinned
-  # to the CPU. Only needed for PDF input or as an accuracy fallback — the
-  # default `rust` OCR engine handles images in-process with no container.
-  docling:
-    image: ghcr.io/docling-project/docling-serve
-    environment:
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-    ports:
-      - "5001:5001"
-
-  # Tier-2 LLM: persistent warm inferer over gRPC. The GGUF is auto-downloaded
-  # and checksum-verified into ../models on first start if not already present
-  # (see docker/entrypoint-inferer.sh); the volume mount persists it across
-  # container recreation.
-  inferer:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.inferer
-    volumes:
-      - ../models:/models
-    environment:
-      MODEL_PATH: /models/qwen2.5-1.5b-instruct-q4_k_m.gguf
-      MLIS_INFERER_BIND: 0.0.0.0:50051
-      # Override to fetch a different quant/model (must match MODEL_SHA256):
-      # MODEL_URL: https://huggingface.co/.../resolve/main/model.gguf
-      # MODEL_SHA256: <sha256 of the file above>
-    ports:
-      - "50051:50051"
-    # GPU passthrough (optional; requires the NVIDIA container runtime):
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - capabilities: [gpu]
-
   # Web app: Tier 1 (deterministic MRZ) + Tier 2 fallback. Bearer-auth required
   # because it binds non-loopback (change MLIS_TOKEN before exposing it).
   serve:
     build:
       context: ..
       dockerfile: docker/Dockerfile.serve
-    depends_on:
-      - docling
-      - inferer
     environment:
       BIND_ADDR: 0.0.0.0:8080
-      DOCLING_URL: http://docling:5001
-      # This compose file demonstrates the legacy full stack (docling-serve +
-      # gRPC sidecar), so both engines are pinned explicitly rather than left
-      # at their new in-process defaults (`rust` OCR / `native` inferer).
-      # Drop MLIS_OCR_ENGINE for the default in-process engine unless you
-      # specifically need PDF input, and drop MLIS_INFERER once the sidecar
-      # is retired.
-      MLIS_OCR_ENGINE: docling
-      MLIS_INFERER: grpc
-      MLIS_INFERER_ADDR: http://inferer:50051
       MLIS_TOKEN: change-me-in-production
       # Optional Tier-3 hardening:
       # MLIS_AUDIT_LOG: /data/audit.jsonl

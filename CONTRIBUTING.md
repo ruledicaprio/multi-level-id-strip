@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for your interest in `multi-level-id-strip` (mlis). This is a Rust workspace with a Python
-inference sidecar and a WASM browser demo.
+Thanks for your interest in `multi-level-id-strip` (mlis). This is a pure-Rust workspace (no
+Python, no Docker required for any functional path as of v0.7.5) plus a WASM browser demo.
 
 ## Layout
 
@@ -9,12 +9,12 @@ inference sidecar and a WASM browser demo.
 crates/mrz          zero-dep ICAO 9303 engine (TD1/TD2/TD3, checksum-verified OCR repair)
 crates/mrz-wasm     wasm-bindgen wrapper for the GitHub Pages demo
 crates/mlis-core    canonical Extraction schema + Tier-3 audit/crypto (feature `security`)
-crates/mlis-pipeline  OCR trait → Tier 1 MRZ → Tier 2 gRPC inferer → JSON
+crates/mlis-llm     in-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`
+crates/mlis-ocr     in-process pure-Rust OCR: `ocrs`/`rten`
+crates/mlis-pipeline  OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2 InferBackend → JSON
 crates/mlis-cli     CLI (binary `mlis`, + `mlis decrypt`)
 crates/mlis-serve   axum web app (auth, TLS)
 crates/ocr-daemon   native Tesseract+Leptonica OCR engine (Linux/WSL only)
-proto/              inferer.proto — the gRPC contract for Rust + Python
-python/inferer      persistent warm LLM sidecar (grpcio)
 ```
 
 ## Building & testing
@@ -23,17 +23,13 @@ The default toolchain target is `x86_64-pc-windows-msvc`; if you don't have the 
 any OS), the simplest reproducible path is a Linux Rust container:
 
 ```bash
-# needs: cmake, protobuf-compiler, and (for ocr-daemon) clang + libtesseract/libleptonica
+# needs: cmake, and (for ocr-daemon / native-ocr) clang + libtesseract/libleptonica
 cargo test --workspace                 # cross-platform crates
 cargo test -p ocr-daemon               # native OCR (Linux/WSL, tesseract installed)
 cargo build -p mlis-pipeline --features native-ocr   # wire in the native engine
-
-# Python inferer (from ./python)
-python generate_grpc.py && python smoke_test.py       # gRPC stubs + mock-mode smoke
 ```
 
-`gRPC codegen` needs `protobuf-compiler` (Rust `tonic-build`) and `grpcio-tools` (Python). The
-native `ocr-daemon` is **Linux/WSL only** and excluded from `default-members`; CI must not build it
+The native `ocr-daemon` is **Linux/WSL only** and excluded from `default-members`; CI must not build it
 on Windows/macOS.
 
 ## Guidelines
@@ -59,10 +55,11 @@ git push -u origin <topic>-branch
 gh pr create
 ```
 
-The PR must show 4 green required checks before the merge button unlocks: `Rust (Linux, incl.
-native OCR)`, `Rust (macos-latest, default members)`, `Python inferer (gRPC smoke)`, and `Bridge
-(Rust client -> real Python inferer)`. No review approval is required (solo maintainer), but a PR
-and passing CI always are.
+The PR must show 2 green required checks before the merge button unlocks: `Rust (Linux, incl.
+native OCR)` and `Rust (macos-latest, default members)`. (Earlier releases also required a Python
+gRPC smoke test and a cross-language bridge test; both were removed as required checks in v0.7.5
+along with the gRPC backend and its Python sidecar — see CHANGELOG.md.) No review approval is
+required (solo maintainer), but a PR and passing CI always are.
 
 If you work from more than one machine, always `git fetch && git merge --ff-only origin/main`
 (or `git pull --ff-only`) before branching off — this fails loudly instead of silently diverging
