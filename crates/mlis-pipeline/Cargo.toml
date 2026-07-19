@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-mrz = { path = "../mrz", features = ["serde"] }
+mrz = { path = "../mrz", features = ["serde", "zeroize"] }
 mlis-core = { path = "../mlis-core", features = ["security"] }
 tokio = { workspace = true, features = ["fs", "sync", "rt"] }
 serde_json = "1"
 async-trait = "0.1"
+zeroize = "1"
 # Native Tesseract+Leptonica OCR engine — Linux/WSL only, opt-in.
 ocr-daemon = { path = "../ocr-daemon", optional = true }
 # Pure-Rust ocrs/rten OCR engine — the default OCR backend.

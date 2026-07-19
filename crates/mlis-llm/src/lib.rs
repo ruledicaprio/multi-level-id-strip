@@ -23,6 +23,7 @@ use mlis_core::Extraction;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Mutex;
+use zeroize::Zeroizing;
 
 /// The ChatML stop sequence Qwen emits at the end of a turn.
 const STOP_SEQUENCE: &str = "<|im_end|>";
@@ -78,13 +79,26 @@ impl NativeLlm {
 
     /// Greedy-sample a completion for `markdown`'s ChatML prompt, stopping at
     /// `<|im_end|>`, an end-of-generation token, or [`MAX_NEW_TOKENS`].
-    fn generate(&self, markdown: &str, mut on_delta: impl FnMut(&str)) -> Result<String, String> {
+    ///
+    /// The returned raw text (and the prompt built internally) contain PII
+    /// from the source document, and are never returned past
+    /// [`extract`]/[`extract_stream`] — both wrap them in [`Zeroizing`] so
+    /// they're wiped from memory once [`repair::parse_extraction`] has
+    /// consumed them.
+    ///
+    /// [`extract`]: Self::extract
+    /// [`extract_stream`]: Self::extract_stream
+    fn generate(
+        &self,
+        markdown: &str,
+        mut on_delta: impl FnMut(&str),
+    ) -> Result<Zeroizing<String>, String> {
         let _guard = self
             .gen_lock
             .lock()
             .map_err(|_| "generation lock poisoned")?;
 
-        let prompt_text = prompt::build_prompt(markdown);
+        let prompt_text = Zeroizing::new(prompt::build_prompt(markdown));
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(self.n_ctx))
             .with_n_batch(self.n_ctx.get());
@@ -122,7 +136,7 @@ impl NativeLlm {
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut n_cur = batch.n_tokens();
         let end_at = n_cur + MAX_NEW_TOKENS;
-        let mut output = String::new();
+        let mut output = Zeroizing::new(String::new());
 
         while n_cur < end_at {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
@@ -139,7 +153,12 @@ impl NativeLlm {
             on_delta(&piece);
             output.push_str(&piece);
             if output.ends_with(STOP_SEQUENCE) {
-                output.truncate(output.len() - STOP_SEQUENCE.len());
+                // Computed as a separate binding (rather than inline in the
+                // `truncate` call) because `output: Zeroizing<String>`
+                // doesn't get the same two-phase-borrow leniency through
+                // `DerefMut` that a plain `String` receiver would here.
+                let new_len = output.len() - STOP_SEQUENCE.len();
+                output.truncate(new_len);
                 break;
             }
 
@@ -152,6 +171,6 @@ impl NativeLlm {
             n_cur += 1;
         }
 
-        Ok(output.trim().to_string())
+        Ok(Zeroizing::new(output.trim().to_string()))
     }
 }

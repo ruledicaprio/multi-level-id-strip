@@ -3,7 +3,7 @@
 `multi-level-id-strip` (MIT) bundles and builds on third-party open-source components.
 All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 
-> This file is hand-curated and, as of v0.8.0, still not fully current for the native LLM/OCR
+> This file is hand-curated and, as of v0.9.0, still not fully current for the native LLM/OCR
 > deps added in v0.6.0/v0.7.0 (`llama-cpp-2`, `ocrs`, `rten`) — verify their licenses before
 > relying on this list. Regenerate the authoritative, version-exact list before a release:
 >
@@ -16,6 +16,10 @@ All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 > The legacy Python inferer sidecar (`grpcio`, `pydantic`, `llama-cpp-python`) and `docling_rs`
 > were removed in v0.7.5 along with the gRPC backend and the `docling-serve` OCR engine — no
 > Python dependencies remain in this project at all.
+>
+> The `fuzz/` crate (v0.9.0, coverage-guided fuzzing of `mrz`) is its own detached Cargo
+> workspace and is never built into a shipped binary — its `libfuzzer-sys` dependency is
+> intentionally omitted from the table below, same reasoning as dev-only test dependencies.
 
 ## Rust crates
 
@@ -23,6 +27,7 @@ All are permissively licensed (MIT / Apache-2.0 / BSD / ISC) — no copyleft.
 | --- | --- |
 | MIT OR Apache-2.0 | `tokio`, `axum`, `axum-server`, `tower`, `tower-http`, `hyper`, `hyper-util`, `serde`, `serde_json`, `rustls`, `image`, `thiserror`, `async-trait`, `uuid`, `getrandom` |
 | MIT OR Apache-2.0 (RustCrypto / dalek-cryptography) | `sha2`, `aes-gcm`, `base64`, `ed25519-dalek` |
+| MIT OR Apache-2.0 | `zeroize` (memory-wiping on drop, v0.9.0) |
 | ISC AND (Apache-2.0 OR ISC) AND OpenSSL | `aws-lc-rs` / `aws-lc-sys` (default rustls crypto provider) |
 | Apache-2.0 (wraps C libs) | `leptess` → **Tesseract** (Apache-2.0) + **Leptonica** (BSD-2-Clause) |
 | *(unverified — see note above)* | `llama-cpp-2` → **llama.cpp**, `ocrs`, `rten` |

@@ -5,6 +5,17 @@ edition.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
+# Optional, mirrors the `serde` feature above: keeps this crate zero-dep by
+# default so it compiles cleanly to wasm32-unknown-unknown for the browser
+# demo (mrz-wasm never enables this feature).
+zeroize = { version = "1", features = ["derive"], optional = true }
 
 [features]
 serde = ["dep:serde"]
+zeroize = ["dep:zeroize"]
+
+[dev-dependencies]
+# Property-based "never panics on arbitrary input" regression suite (see
+# tests/fuzz_props.rs). Dev-only: doesn't ship, doesn't affect the
+# wasm32-unknown-unknown zero-dep build.
+proptest = "1"
