@@ -13,6 +13,8 @@
 //! `mlis-pipeline` layer (see `crates/mlis-pipeline/src/ocr.rs`).
 
 pub mod download;
+#[cfg(feature = "embedded-models")]
+pub mod embedded;
 pub mod verify;
 
 use ocrs::{ImageSource, OcrEngine as OcrsEngine, OcrEngineParams};
@@ -38,6 +40,25 @@ impl NativeOcr {
                 recognition_path.display()
             )
         })?;
+        let engine = OcrsEngine::new(OcrEngineParams {
+            detection_model: Some(detection_model),
+            recognition_model: Some(recognition_model),
+            ..Default::default()
+        })
+        .map_err(|e| format!("failed to build ocrs engine: {e}"))?;
+        Ok(Self { engine })
+    }
+
+    /// Build a warm engine from the models baked into the binary at compile
+    /// time (`embedded-models` feature) — no filesystem or network access,
+    /// for a true single-file air-gapped deployment (see
+    /// docs/ARCHITECTURE.md §10).
+    #[cfg(feature = "embedded-models")]
+    pub fn load_embedded() -> Result<Self, String> {
+        let detection_model = Model::load_static_slice(embedded::DETECTION_BYTES)
+            .map_err(|e| format!("failed to load embedded detection model: {e}"))?;
+        let recognition_model = Model::load_static_slice(embedded::RECOGNITION_BYTES)
+            .map_err(|e| format!("failed to load embedded recognition model: {e}"))?;
         let engine = OcrsEngine::new(OcrEngineParams {
             detection_model: Some(detection_model),
             recognition_model: Some(recognition_model),

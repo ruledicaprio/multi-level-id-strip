@@ -5,14 +5,7 @@
 use mlis_core::audit::Sha256MismatchError;
 use std::path::Path;
 
-/// `text-detection.rten` from the fixed `ocrs-models` S3 bucket this workspace
-/// ships against. Override with `MLIS_OCR_DETECTION_SHA256`.
-pub const KNOWN_GOOD_SHA256_DETECTION: &str =
-    "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca";
-/// `text-recognition.rten` from the fixed `ocrs-models` S3 bucket this
-/// workspace ships against. Override with `MLIS_OCR_RECOGNITION_SHA256`.
-pub const KNOWN_GOOD_SHA256_RECOGNITION: &str =
-    "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e";
+include!("known_good_hashes.rs");
 
 /// [`Sha256MismatchError`] under this crate's established name.
 pub type VerifyError = Sha256MismatchError;

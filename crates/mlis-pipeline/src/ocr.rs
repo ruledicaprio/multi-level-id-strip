@@ -87,6 +87,9 @@ mod rust_ocr {
 
     pub struct RustOcrEngine {
         model_dir: PathBuf,
+        // Only read on the non-`ocr-embedded` load path (see `get_or_load`
+        // below) — genuinely unused when models are compiled in instead.
+        #[cfg_attr(feature = "ocr-embedded", allow(dead_code))]
         auto_download: bool,
         inner: OnceCell<Arc<mlis_ocr::NativeOcr>>,
     }
@@ -107,32 +110,44 @@ mod rust_ocr {
         async fn get_or_load(&self) -> Result<Arc<mlis_ocr::NativeOcr>, String> {
             self.inner
                 .get_or_try_init(|| async {
-                    let model_dir = self.model_dir.clone();
-                    let auto_download = self.auto_download;
-                    tokio::task::spawn_blocking(move || {
-                        let (detection, recognition) = if auto_download {
-                            mlis_ocr::download::ensure_models(&model_dir)?
-                        } else {
-                            (
-                                model_dir.join(mlis_ocr::download::DETECTION_FILENAME),
-                                model_dir.join(mlis_ocr::download::RECOGNITION_FILENAME),
-                            )
-                        };
-                        // Verify on the actual load path, not just in `mlis doctor` —
-                        // a tampered or corrupted-but-complete download (whether
-                        // fetched just now or cached from a previous run) must fail
-                        // closed before it's ever loaded into the OCR engine.
-                        if !mlis_ocr::verify::skip_verify() {
-                            mlis_ocr::verify::verify_detection_model(&detection)
-                                .map_err(|e| e.to_string())?;
-                            mlis_ocr::verify::verify_recognition_model(&recognition)
-                                .map_err(|e| e.to_string())?;
-                        }
-                        mlis_ocr::NativeOcr::load(&detection, &recognition)
-                    })
-                    .await
-                    .map_err(|e| format!("ocr model load task panicked: {e}"))?
-                    .map(Arc::new)
+                    #[cfg(feature = "ocr-embedded")]
+                    {
+                        // No filesystem/network access at all — the models
+                        // are already in the binary (see mlis-ocr/build.rs).
+                        return tokio::task::spawn_blocking(mlis_ocr::NativeOcr::load_embedded)
+                            .await
+                            .map_err(|e| format!("ocr model load task panicked: {e}"))?
+                            .map(Arc::new);
+                    }
+                    #[cfg(not(feature = "ocr-embedded"))]
+                    {
+                        let model_dir = self.model_dir.clone();
+                        let auto_download = self.auto_download;
+                        tokio::task::spawn_blocking(move || {
+                            let (detection, recognition) = if auto_download {
+                                mlis_ocr::download::ensure_models(&model_dir)?
+                            } else {
+                                (
+                                    model_dir.join(mlis_ocr::download::DETECTION_FILENAME),
+                                    model_dir.join(mlis_ocr::download::RECOGNITION_FILENAME),
+                                )
+                            };
+                            // Verify on the actual load path, not just in `mlis doctor` —
+                            // a tampered or corrupted-but-complete download (whether
+                            // fetched just now or cached from a previous run) must fail
+                            // closed before it's ever loaded into the OCR engine.
+                            if !mlis_ocr::verify::skip_verify() {
+                                mlis_ocr::verify::verify_detection_model(&detection)
+                                    .map_err(|e| e.to_string())?;
+                                mlis_ocr::verify::verify_recognition_model(&recognition)
+                                    .map_err(|e| e.to_string())?;
+                            }
+                            mlis_ocr::NativeOcr::load(&detection, &recognition)
+                        })
+                        .await
+                        .map_err(|e| format!("ocr model load task panicked: {e}"))?
+                        .map(Arc::new)
+                    }
                 })
                 .await
                 .cloned()
