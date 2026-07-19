@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 mlis-pipeline = { path = "../mlis-pipeline" }
+mlis-license = { path = "../mlis-license" }
 tokio = { workspace = true, features = ["fs", "net"] }
 tokio-stream = "0.1"
 axum = { version = "0.8", features = ["multipart"] }

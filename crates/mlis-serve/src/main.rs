@@ -20,7 +20,12 @@ use axum::{
 };
 use mlis_pipeline::{Pipeline, ProcessEvent};
 use serde_json::{json, Value};
-use std::{convert::Infallible, env, path::PathBuf, sync::Arc};
+use std::{
+    convert::Infallible,
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -36,6 +41,12 @@ struct AppState {
     /// this many queued/in-flight Tier-2 requests, instead of accepting them
     /// unboundedly and leaving them to block behind the single-GPU semaphore.
     max_queue_depth: usize,
+    /// The license's `expires_unix`, cached at boot. `None` when
+    /// `MLIS_LICENSE_SKIP=1`. Full signature verification only happens once
+    /// at boot (see [`license_refusal`]); this cheap expiry-only comparison
+    /// runs per-request so a long-running server stops serving once expired,
+    /// without re-verifying the signature on every request.
+    license_expires_unix: Option<u64>,
 }
 
 type ApiError = (StatusCode, Json<Value>);
@@ -68,6 +79,29 @@ fn startup_refusal(bind_addr: &str, token: &Option<String>) -> Option<String> {
         ))
     } else {
         None
+    }
+}
+
+/// Default path for the license file when `MLIS_LICENSE_PATH` is unset.
+const DEFAULT_LICENSE_PATH: &str = "license.mlis";
+
+/// License startup gate: refuse to boot without a valid license, unless
+/// `MLIS_LICENSE_SKIP=1`. Pure — takes the already-computed check result
+/// rather than doing file IO itself, so it's unit-testable the same way
+/// [`startup_refusal`] is. Returns the status to cache in `AppState` on
+/// success (`None` when skipped), or the refusal message to exit with.
+fn license_refusal(
+    skip: bool,
+    check: Result<mlis_license::LicenseStatus, mlis_license::LicenseError>,
+) -> Result<Option<mlis_license::LicenseStatus>, String> {
+    if skip {
+        return Ok(None);
+    }
+    match check {
+        Ok(status) => Ok(Some(status)),
+        Err(e) => Err(format!(
+            "refusing to start without a valid license: {e} (set MLIS_LICENSE_SKIP=1 for local development)"
+        )),
     }
 }
 
@@ -107,6 +141,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(reason.into());
     }
 
+    let license_skip = env::var("MLIS_LICENSE_SKIP").as_deref() == Ok("1");
+    let license_path =
+        env::var("MLIS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into());
+    let license_status = match license_refusal(
+        license_skip,
+        mlis_license::load_and_check(Path::new(&license_path)),
+    ) {
+        Ok(status) => status,
+        Err(reason) => return Err(reason.into()),
+    };
+    let license_expires_unix = license_status.as_ref().map(|s| s.payload.expires_unix);
+
     tokio::fs::create_dir_all(&work_dir).await?;
 
     let pipeline = Pipeline::from_env();
@@ -115,8 +161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "http"
     };
+    let license_desc = match &license_status {
+        Some(status) => format!(
+            "{} (expires in {} days)",
+            status.payload.tier,
+            status.days_until_expiry(mlis_license::current_unix())
+        ),
+        None => "skipped".to_string(),
+    };
     println!(
-        "🚀 [mlis-serve] Listening on {scheme}://{bind_addr} (ocr: {}, auth: {})",
+        "🚀 [mlis-serve] Listening on {scheme}://{bind_addr} (ocr: {}, auth: {}, license: {license_desc})",
         pipeline.ocr_engine(),
         if token.is_some() { "bearer" } else { "none" }
     );
@@ -127,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         keep_work,
         token,
         max_queue_depth,
+        license_expires_unix,
     });
 
     let app = Router::new()
@@ -173,6 +228,18 @@ async fn extract(
             StatusCode::SERVICE_UNAVAILABLE,
             "inference queue is full — try again shortly",
         ));
+    }
+
+    // Cheap expiry-only check (no signature re-verification — that only
+    // happens once at boot) so a long-running server past its license's
+    // expiry stops serving instead of running indefinitely on a stale check.
+    if let Some(expires_unix) = state.license_expires_unix {
+        if mlis_license::current_unix() > expires_unix {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "license has expired",
+            ));
+        }
     }
 
     // Take the first uploaded file field.
@@ -298,6 +365,44 @@ mod tests {
         assert!(startup_refusal("127.0.0.1:8080", &None).is_none());
     }
 
+    fn sample_license_payload(expires_unix: u64) -> mlis_license::LicensePayload {
+        mlis_license::LicensePayload {
+            license_id: "test-license".into(),
+            customer: "Test Customer".into(),
+            hw_fingerprint: String::new(),
+            issued_unix: 0,
+            expires_unix,
+            tier: "enterprise".into(),
+            features: vec![],
+            mlis_min_version: None,
+        }
+    }
+
+    #[test]
+    fn license_refuses_boot_when_check_fails_and_not_skipped() {
+        let err = mlis_license::LicenseError::Expired { expires_unix: 0 };
+        assert!(license_refusal(false, Err(err)).is_err());
+    }
+
+    #[test]
+    fn license_allows_boot_when_skipped_even_if_check_fails() {
+        let err = mlis_license::LicenseError::Expired { expires_unix: 0 };
+        let result = license_refusal(true, Err(err));
+        assert!(
+            matches!(result, Ok(None)),
+            "skip must bypass a failed check"
+        );
+    }
+
+    #[test]
+    fn license_returns_status_when_check_succeeds() {
+        let status = mlis_license::LicenseStatus {
+            payload: sample_license_payload(4_000_000_000),
+        };
+        let result = license_refusal(false, Ok(status));
+        assert!(matches!(result, Ok(Some(_))));
+    }
+
     #[tokio::test]
     async fn extract_rejects_with_503_when_queue_is_full() {
         let pipeline = Pipeline::new(
@@ -312,6 +417,36 @@ mod tests {
             keep_work: false,
             token: None,
             max_queue_depth: 0,
+            license_expires_unix: None,
+        });
+        let app = Router::new()
+            .route("/api/extract", post(extract))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/extract")
+            .header("content-type", "multipart/form-data; boundary=X-BOUNDARY-X")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn extract_rejects_with_503_when_license_expired() {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        let state = Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: None,
+            max_queue_depth: 4,
+            license_expires_unix: Some(0), // expired at the Unix epoch
         });
         let app = Router::new()
             .route("/api/extract", post(extract))
@@ -342,6 +477,7 @@ mod tests {
             keep_work: false,
             token: token.map(str::to_string),
             max_queue_depth: 4,
+            license_expires_unix: None,
         })
     }
 

@@ -16,9 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage:");
-        eprintln!("  cargo run -p mlis-cli -- <path_to_image_or_pdf>   extract");
+        eprintln!("  cargo run -p mlis-cli -- <path_to_image>          extract (needs a license — see below)");
         eprintln!("  cargo run -p mlis-cli -- decrypt <file.json.enc>  decrypt (needs MLIS_KEY)");
-        eprintln!("  cargo run -p mlis-cli -- doctor                   preflight: OCR/inferer reachability, config sanity");
+        eprintln!("  cargo run -p mlis-cli -- doctor                   preflight: OCR/inferer/license, config sanity");
+        eprintln!("  cargo run -p mlis-cli -- fingerprint              print this machine's fingerprint (send to your vendor)");
+        eprintln!("  cargo run -p mlis-cli -- verify-license [path]    verify a license file (default: MLIS_LICENSE_PATH or ./license.mlis)");
         return Ok(());
     }
 
@@ -32,9 +34,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return doctor_command().await;
     }
 
+    // `mlis fingerprint` / `mlis verify-license` — diagnostic/recovery
+    // commands that must work WITHOUT a valid license (you need
+    // `fingerprint` to obtain one in the first place), so neither is gated
+    // by `check_license` below.
+    if args[1] == "fingerprint" {
+        println!("{}", mlis_license::machine_fingerprint());
+        return Ok(());
+    }
+    if args[1] == "verify-license" {
+        return verify_license_command(args.get(2).map(String::as_str));
+    }
+
     let input = Path::new(&args[1]);
     if !input.exists() {
         eprintln!("❌ Error: File not found at {}", input.display());
+        return Ok(());
+    }
+
+    // Extraction is the one path that actually needs a valid license.
+    if let Err(e) = check_license() {
+        eprintln!("❌ {e}");
+        eprintln!("   run `mlis fingerprint` and contact your vendor for a license, or set MLIS_LICENSE_SKIP=1 for local development");
         return Ok(());
     }
 
@@ -82,6 +103,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Default path for the license file when `MLIS_LICENSE_PATH` is unset.
+const DEFAULT_LICENSE_PATH: &str = "license.mlis";
+
+/// Gate for the extraction path only (see call site in `main`) — `decrypt`,
+/// `doctor`, `fingerprint`, and `verify-license` all stay usable without a
+/// valid license. `MLIS_LICENSE_SKIP=1` bypasses this for local development,
+/// mirroring `MLIS_MODEL_SKIP_VERIFY`.
+fn check_license() -> Result<(), String> {
+    if env::var("MLIS_LICENSE_SKIP").as_deref() == Ok("1") {
+        return Ok(());
+    }
+    let path = env::var("MLIS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into());
+    mlis_license::load_and_check(Path::new(&path))
+        .map(|_| ())
+        .map_err(|e| format!("license check failed ({path}): {e}"))
+}
+
+/// `mlis doctor`'s license block: required unless `MLIS_LICENSE_SKIP=1`
+/// (mirrors the `MLIS_KEY`/`MLIS_AUDIT_LOG` blocks' shape below, but this
+/// one toggles `ok` since — unlike those two — a missing/invalid license
+/// blocks the extraction path entirely, not just an optional feature).
+fn check_license_doctor(ok: &mut bool) {
+    if env::var("MLIS_LICENSE_SKIP").as_deref() == Ok("1") {
+        println!("✅ License: skipped (MLIS_LICENSE_SKIP=1)");
+        return;
+    }
+    let path = env::var("MLIS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into());
+    match mlis_license::load_and_check(Path::new(&path)) {
+        Ok(status) => {
+            let days_left = status.days_until_expiry(mlis_license::current_unix());
+            if days_left < 30 {
+                println!(
+                    "⚠️  License ({path}): {} — expires in {days_left} days",
+                    status.payload.tier
+                );
+            } else {
+                println!(
+                    "✅ License ({path}): {} — expires in {days_left} days",
+                    status.payload.tier
+                );
+            }
+        }
+        Err(e) => {
+            println!("❌ License ({path}): {e}");
+            *ok = false;
+        }
+    }
+}
+
+/// `mlis verify-license [path]` — verify a license file and print its
+/// status. `path` overrides `MLIS_LICENSE_PATH`/the default. Non-zero exit
+/// on any failure, matching `doctor`'s convention — this command's whole job
+/// is to report validity, so a meaningful exit code matters for scripting.
+fn verify_license_command(path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = path.map(String::from).unwrap_or_else(|| {
+        env::var("MLIS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into())
+    });
+
+    match mlis_license::load_and_check(Path::new(&path)) {
+        Ok(status) => {
+            let days_left = status.days_until_expiry(mlis_license::current_unix());
+            println!("✅ License valid ({path})");
+            println!("   id: {}", status.payload.license_id);
+            println!("   customer: {}", status.payload.customer);
+            println!("   tier: {}", status.payload.tier);
+            println!(
+                "   bound to: {}",
+                if status.payload.hw_fingerprint.is_empty() {
+                    "(unbound — any machine)".to_string()
+                } else {
+                    status.payload.hw_fingerprint
+                }
+            );
+            println!("   days until expiry: {days_left}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("❌ License invalid ({path}): {e}");
+            Err(e.into())
+        }
+    }
+}
+
 /// `mlis decrypt <file.json.enc>` — decrypt an AES-256-GCM payload (written when
 /// `MLIS_KEY` is set) to stdout, using the same `MLIS_KEY`.
 fn decrypt_command(file: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -126,6 +230,8 @@ async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
             ok = false;
         }
     }
+
+    check_license_doctor(&mut ok);
 
     if let Ok(key) = env::var("MLIS_KEY") {
         match mlis_core::crypt::key_from_base64(&key) {

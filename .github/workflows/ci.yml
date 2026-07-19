@@ -60,6 +60,12 @@ jobs:
       - name: Test (workspace, includes ocr-daemon)
         run: cargo test --workspace
 
+      # Not covered by the default-features workspace test above: the
+      # vendor-gated signing/keygen path (issuer binary + its round-trip
+      # test) is opt-in on purpose, so it needs its own explicit run.
+      - name: Test mlis-license vendor (signing/keygen) feature
+        run: cargo test -p mlis-license --features vendor
+
       - name: Native OCR e2e test (real ocrs/rten models)
         run: cargo test -p mlis-ocr --test native_ocr_e2e -- --ignored
 
@@ -73,6 +79,15 @@ jobs:
         run: |
           cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
           cargo check -p mlis-pipeline --no-default-features --features inferer-native,native-ocr
+
+      # mlis-license's default build (no `vendor`) must stay signing-free —
+      # it's what mlis-cli/mlis-serve actually ship; `vendor` (the issuer
+      # binary's signing/keygen code) is checked separately so a break in
+      # either doesn't hide behind the other.
+      - name: Check mlis-license feature combinations (each must build alone)
+        run: |
+          cargo check -p mlis-license
+          cargo check -p mlis-license --features vendor
 
   # Cross-platform crates only (no native ocr-daemon / no system OCR libs).
   # `mlis-ocr` (ocrs/rten) is a default member, so this is real proof of the

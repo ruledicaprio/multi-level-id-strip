@@ -6,6 +6,7 @@ members = [
     "crates/mlis-core",
     "crates/mlis-llm",
     "crates/mlis-ocr",
+    "crates/mlis-license",
     "crates/mlis-pipeline",
     "crates/mlis-cli",
     "crates/mlis-serve",
@@ -21,13 +22,14 @@ default-members = [
     "crates/mlis-core",
     "crates/mlis-llm",
     "crates/mlis-ocr",
+    "crates/mlis-license",
     "crates/mlis-pipeline",
     "crates/mlis-cli",
     "crates/mlis-serve",
 ]
 
 [workspace.package]
-version = "0.7.5"
+version = "0.8.0"
 edition = "2021"
 authors = ["Rusmir Skopljak <rusmirskopljak@gmail.com>"]
 license = "MIT"
