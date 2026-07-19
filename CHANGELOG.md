@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v1.2.0 "dependency diet" milestone
+
+Roadmap: docs/ARCHITECTURE.md §10. Every dependency shed is surface the project no longer has
+to secure, license-audit, cross-compile, or explain to a procurement department.
+
+### Removed
+- **`ocr-daemon` (Tesseract + Leptonica) and the `native-ocr` feature.** The Linux/WSL-only
+  accuracy fallback's justification — parity doubt about the then-new `ocrs` engine — was closed
+  by v1.1.0's measured 100% Tier-1 corpus hit rate, achieved partly by absorbing `ocr-daemon`'s
+  own preprocessing into `mlis-ocr`. Removes the last C-library OCR chain from the workspace,
+  the Tesseract packages from CI and `docker/Dockerfile.builder`, the `default-members` split
+  (the workspace is fully cross-platform again), and the musl job's now-vacuous
+  no-Tesseract negative check. `MLIS_OCR_ENGINE` survives for compatibility: any value other
+  than `rust` warns and uses the pure-Rust engine.
+
 ## [1.1.0] — 2026-07-19
 
 Tier-1 accuracy release: the corpus-measured Tier-1 hit rate (checksum-valid MRZ extraction, no

@@ -10,22 +10,6 @@ members = [
     "crates/mlis-pipeline",
     "crates/mlis-cli",
     "crates/mlis-serve",
-    "crates/ocr-daemon",
-]
-# ocr-daemon links system libtesseract/libleptonica (Linux/WSL only), so it is
-# NOT in the default set. Portable/Windows builds use `cargo build` (default
-# members); Linux builds the native engine with `cargo build --workspace` or
-# `cargo build -p ocr-daemon` (+ `-p mlis-pipeline --features native-ocr`).
-default-members = [
-    "crates/mrz",
-    "crates/mrz-wasm",
-    "crates/mlis-core",
-    "crates/mlis-llm",
-    "crates/mlis-ocr",
-    "crates/mlis-license",
-    "crates/mlis-pipeline",
-    "crates/mlis-cli",
-    "crates/mlis-serve",
 ]
 
 [workspace.package]
@@ -38,7 +22,6 @@ description = "Air-gapped, multi-level identity-document extraction: determinist
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Pulled in directly by mlis-ocr; ocr-daemon has its own unpinned `image = "0.25"`.
 image = "0.25"
 
 # Release builds: fat LTO + single codegen unit for smaller, faster binaries

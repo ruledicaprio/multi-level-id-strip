@@ -28,7 +28,6 @@ ARG ZIG_VERSION=0.13.0
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     cmake pkg-config clang libclang-dev \
-    libtesseract-dev libleptonica-dev tesseract-ocr tesseract-ocr-eng \
     curl xz-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

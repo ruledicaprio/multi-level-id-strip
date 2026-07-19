@@ -37,8 +37,8 @@ use tokio::sync::{mpsc, Semaphore};
 use zeroize::Zeroizing;
 
 pub struct Pipeline {
-    /// The OCR engine (pure-Rust `ocrs`/`rten` by default, or native
-    /// Tesseract on Linux/WSL).
+    /// The OCR engine (pure-Rust `ocrs`/`rten` — the only engine since
+    /// v1.2.0).
     ocr: Box<dyn OcrEngine>,
     /// Tier-2 inference backend (native llama.cpp, in-process).
     infer: Box<dyn InferBackend>,

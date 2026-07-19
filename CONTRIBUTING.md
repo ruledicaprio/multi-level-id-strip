@@ -11,10 +11,9 @@ crates/mrz-wasm     wasm-bindgen wrapper for the GitHub Pages demo
 crates/mlis-core    canonical Extraction schema + Tier-3 audit/crypto (feature `security`)
 crates/mlis-llm     in-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`
 crates/mlis-ocr     in-process pure-Rust OCR: `ocrs`/`rten`
-crates/mlis-pipeline  OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2 InferBackend → JSON
+crates/mlis-pipeline  OcrEngine trait → Tier 1 MRZ → Tier 2 InferBackend → JSON
 crates/mlis-cli     CLI (binary `mlis`, + `mlis decrypt`)
 crates/mlis-serve   axum web app (auth, TLS)
-crates/ocr-daemon   native Tesseract+Leptonica OCR engine (Linux/WSL only)
 ```
 
 ## Building & testing
@@ -30,15 +29,8 @@ docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
 # Git Bash on Windows needs MSYS_NO_PATHCONV=1 so `-w /work` isn't mangled into a Windows path.
 MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/work" \
   -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
-  -w /work mlis-builder:latest bash -c "
-    cargo test --workspace                 # cross-platform crates
-    cargo test -p ocr-daemon               # native OCR (Linux/WSL, tesseract installed)
-    cargo build -p mlis-pipeline --features native-ocr   # wire in the native engine
-  "
+  -w /work mlis-builder:latest bash -c "cargo test --workspace"
 ```
-
-The native `ocr-daemon` is **Linux/WSL only** and excluded from `default-members`; CI must not build it
-on Windows/macOS.
 
 ### Cross-compiling to musl locally
 

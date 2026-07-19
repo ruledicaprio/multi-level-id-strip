@@ -33,11 +33,8 @@ flowchart LR
     A --> B{"mlis-cli<br/>or mlis-serve"}
     B --> P["⚙️ mlis-pipeline<br/>process_document()"]
 
-    P -->|"OcrEngine trait"| OCR{"OCR engine"}
-    OCR -->|"rust (default)"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust"]
-    OCR -->|"native (Linux/WSL,<br/>opt-in)"| TESS["native ocr-daemon<br/>(Tesseract)"]
+    P -->|"OcrEngine trait"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust"]
     RUSTOCR -->|Markdown| P
-    TESS -->|Markdown| P
 
     P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
     T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
@@ -52,7 +49,7 @@ flowchart LR
     A2 -->|"tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>no server at all"]
 ```
 
-Both stages are deliberately pluggable, even though each has one backend as of v0.7.5 — the trait boundary (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs), [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)) is what let v0.6.0/v0.7.0 swap defaults from a Python/Docker sidecar to in-process inference with minimal blast radius, and it's the seam the pipeline's own tests mock against. The legacy gRPC Tier-2 backend and the Docker-based `docling-serve` OCR engine (the only one that parsed PDF) were deleted outright in v0.7.5, not just made non-default — mlis is now genuinely Docker/Python-free and image-only. **native** (Tesseract) remains a Linux/WSL-only OCR accuracy fallback. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Both stages are deliberately pluggable, even though each has one backend as of v0.7.5 — the trait boundary (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs), [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)) is what let v0.6.0/v0.7.0 swap defaults from a Python/Docker sidecar to in-process inference with minimal blast radius, and it's the seam the pipeline's own tests mock against. The legacy gRPC Tier-2 backend and the Docker-based `docling-serve` OCR engine (the only one that parsed PDF) were deleted outright in v0.7.5, and the Tesseract-based `ocr-daemon` accuracy fallback followed in v1.2.0 once the pure-Rust engine measured 100% on the Tier-1 corpus — mlis is genuinely Docker/Python/C-library-free and image-only. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🖼️ Example
 
@@ -162,7 +159,7 @@ plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptog
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MLIS_OCR_ENGINE` | `rust` | `rust` (in-process ocrs/rten, default) or `native` (Linux/WSL Tesseract, `--features native-ocr`) |
+| `MLIS_OCR_ENGINE` | `rust` | `rust` is the only engine since v1.2.0 (any other value warns and falls back) |
 | `MLIS_OCR_MODEL_DIR` | `.` (repo root) | directory holding `text-detection.rten` / `text-recognition.rten`, `rust` engine only |
 | `MLIS_OCR_DETECTION_SHA256` / `MLIS_OCR_RECOGNITION_SHA256` | *(built-in hash)* | override the expected checksums, `rust` engine only |
 | `MLIS_OCR_MODEL_SKIP_VERIFY` | *(unset)* | skip the `rust` engine's model checksum verification |
@@ -179,7 +176,7 @@ plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptog
 | `MLIS_LICENSE_SKIP` | *(unset)* | `1` bypasses license enforcement entirely (local development/CI) |
 | `MLIS_LICENSE_PUBKEY` | *(embedded)* | override the embedded verifying key (base64), for testing |
 
-> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The default `rust` OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows. The Tesseract-based `native` OCR engine (`ocr-daemon`) is Linux/WSL-only.
+> **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows.
 >
 > **OCR accuracy note (v1.1.0):** Tier-1 extraction hits **6/6 (100%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/mlis-ocr/examples/mrz_corpus.rs`](crates/mlis-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual.
 
@@ -234,9 +231,8 @@ image, if you'd rather run it in a container than as a raw binary.
 │   ├── mlis-pipeline/ OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2
 │   │                  InferBackend (native) → JSON. Image-only, license-agnostic.
 │   ├── mlis-cli/      CLI front-end (binary `mlis`; also `decrypt`/`fingerprint`/`verify-license`)
-│   ├── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
-│   │                  bearer auth + TLS + license enforcement
-│   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only, accuracy fallback)
+│   └── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
+│                      bearer auth + TLS + license enforcement
 ├── docker/           Optional container packaging: Dockerfile.serve + docker-compose.yml
 │                     for `mlis-serve` — not required for any functional code path
 ├── web/              GitHub Pages demo site (static, client-side only)
