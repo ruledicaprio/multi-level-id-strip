@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 mlis-pipeline = { path = "../mlis-pipeline" }
 mlis-core = { path = "../mlis-core", features = ["security"] }
+mlis-license = { path = "../mlis-license" }
 # Only needed here for `mlis doctor`'s model-file/checksum check; the actual
 # OCR call goes through mlis-pipeline.
 mlis-ocr = { path = "../mlis-ocr", optional = true }
@@ -22,3 +23,8 @@ ocr-native-rust = ["dep:mlis-ocr"]
 
 [dev-dependencies]
 base64 = "0.22"
+# Signs throwaway test licenses directly (not via mlis-license's `vendor`
+# feature — mlis-cli must never build with that active, in any mode, so the
+# shipped binary's dependency tree stays provably signing-free; see
+# tests/license_roundtrip.rs).
+ed25519-dalek = "3"

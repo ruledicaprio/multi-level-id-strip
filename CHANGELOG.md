@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-07-19
+
+Offline cryptographic licensing: the shipped `mlis`/`mlis-serve` binaries now require an
+Ed25519-signed license to run their extraction path, so the software can be sold and metered for
+air-gapped enterprise distribution without ever phoning home. This is the fourth step on the road
+to a single static musl binary — see `docs/ARCHITECTURE.md` §10.
+
+### Added
+- **`mlis-license`** (new crate): `LicensePayload`/`SignedLicense` types, `verify()` (Ed25519
+  `verify_strict` over the exact signed payload bytes — never a re-serialized copy, so signer and
+  verifier can never desync on field-order/whitespace), `check()` (expiry + optional fingerprint
+  match, pure/deterministic), `load_and_check()` (the file-reading convenience used at
+  CLI/serve startup). `fingerprint::machine_fingerprint()` hashes `/etc/machine-id` (Linux) via
+  the same `sha256_hex` the audit log uses — not the weaker OS+hostname+CPU-brand approach some
+  designs use. `keys::verifying_key()` reads the embedded `pubkey.b64` (or `MLIS_LICENSE_PUBKEY`
+  override, mirroring the `MLIS_MODEL_SHA256` convention).
+- **`mlis-license-issuer`** (new binary, `vendor` feature, never shipped to customers): `keygen`
+  and `issue-license` subcommands. Keeping signing/keygen entirely off the customer-facing binary
+  (rather than gating it by an env var inside the same binary, as a naive design would) means
+  `mlis`/`mlis-serve` carry no private-key handling and no keygen RNG dependency at all.
+- **`mlis fingerprint`** and **`mlis verify-license [path]`** CLI subcommands (hand-rolled
+  dispatch, no `clap` — both are flag-light; the flag-heavy `issue-license` lives only in the
+  off-binary issuer). Both stay usable without a valid license, since you need `fingerprint` to
+  get one.
+- **License enforcement:** `mlis`'s extraction path (`mlis <file>`) checks once at startup;
+  `decrypt`/`doctor`/`fingerprint`/`verify-license` are exempt. `mlis-serve` checks once at boot
+  (`license_refusal()`, mirrors the existing `startup_refusal()` non-loopback gate) plus a cheap
+  expiry-only re-check (no signature re-verification) on every `/api/extract` request, so a
+  long-running server stops serving once its license expires. `MLIS_LICENSE_SKIP=1` bypasses
+  enforcement for local development/CI, mirroring `MLIS_MODEL_SKIP_VERIFY`.
+- **`mlis doctor`** gained a license block: required unless skipped, shows tier/expiry/days
+  remaining, ⚠️ under 30 days remaining.
+- New env vars: `MLIS_LICENSE_PATH` (default `license.mlis`), `MLIS_LICENSE_SKIP`,
+  `MLIS_LICENSE_PUBKEY`; vendor-only `MLIS_LICENSE_PRIVKEY`.
+- CI: `mlis-license`'s default (no `vendor`) and `--features vendor` builds each checked alone;
+  the vendor-gated signing/keygen tests run as their own step (not covered by the default
+  workspace test run, since `vendor` isn't a default feature).
+
+### Changed
+- `crates/mlis-license/pubkey.b64` ships with a **placeholder** keypair generated during
+  development. A real deployment must run `mlis-license-issuer keygen` and replace this file
+  before issuing real licenses — see `docs/ARCHITECTURE.md` §6.
+
+### Known limitations
+- The license binds to an OS *installation* via `/etc/machine-id`, not physically to hardware:
+  root can read/copy it, it survives a disk clone, and expiry trusts the system clock (which an
+  air-gapped operator can roll back). Because the source is public, anyone who rebuilds from
+  source strips the check entirely. This meters and gates the *official pre-built binary* and
+  deters casual sharing — it is explicitly **not DRM** and not sold as tamper-proof. True hardware
+  attestation would need a TPM/HSM, out of scope here. Stated in full in `docs/ARCHITECTURE.md` §6.
+
 ## [0.7.5] — 2026-07-19
 
 Pure-Rust, image-only pipeline: the legacy gRPC Tier-2 backend and the Docker-based

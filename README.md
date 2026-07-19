@@ -19,7 +19,7 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. Both stages run **in-process**: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required, on Windows/macOS/Linux alike. As of **v0.7.5**, this is image-only (JPEG/PNG/WebP/TIFF/BMP/GIF) — PDF input and the Docker-based `docling-serve` engine that used to parse it were removed entirely; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. Both stages run **in-process**: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required, on Windows/macOS/Linux alike. As of **v0.7.5**, this is image-only (JPEG/PNG/WebP/TIFF/BMP/GIF) — PDF input and the Docker-based `docling-serve` engine that used to parse it were removed entirely. As of **v0.8.0**, extraction requires an offline Ed25519-signed license (see [Licensing](#-licensing-v080) below) — the mechanism for selling and metering this without ever phoning home; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design and the road to a single static binary. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine.
 
 ## 🔀 Pipeline
 
@@ -99,7 +99,7 @@ This is explicitly a probabilistic fallback, not a second source of truth: a 1.5
 ## 🚀 Quickstart
 
 No Docker or Python required — both OCR and Tier 2 run in-process. Image input only (JPEG, PNG,
-WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#7-known-limitations--what-tier-2-accuracy-actually-looks-like) for why.
+WebP, TIFF, BMP, GIF) — PDF and HEIC/HEIF are not supported; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like) for why. Extraction needs a license — see [Licensing](#-licensing-v080) below, or set `MLIS_LICENSE_SKIP=1` while developing.
 
 **1. Download the model** (~1 GB, not tracked in git):
 ```powershell
@@ -111,10 +111,10 @@ first run into `MLIS_OCR_MODEL_DIR` (repo root by default) — no manual step ne
 
 **2. Run** (from the repo root):
 ```powershell
-# Preflight: checks OCR/inferer reachability and config before a real run
+# Preflight: checks OCR/inferer/license and config before a real run
 cargo run -p mlis-cli -- doctor
 
-# CLI — one-shot extraction (binary `mlis`):
+# CLI — one-shot extraction (binary `mlis`; needs a license, or MLIS_LICENSE_SKIP=1):
 cargo run -p mlis-cli -- samples/Croatian_passport_data_page.jpg
 
 # Web app — upload page + JSON API on http://127.0.0.1:8080
@@ -125,6 +125,38 @@ cargo run -p mlis-serve
 # API example:
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
+
+## 🔑 Licensing (v0.8.0)
+
+Extraction (`mlis <file>` and `mlis-serve`'s `/api/extract`) requires an offline, Ed25519-signed
+license — set once and checked with no network call. `mlis doctor`, `mlis decrypt`, `mlis
+fingerprint`, and `mlis verify-license` all keep working without one (you need `fingerprint` to
+get one in the first place). For local development, skip enforcement entirely:
+```powershell
+$env:MLIS_LICENSE_SKIP = "1"
+```
+
+**Customer flow:**
+```powershell
+cargo run -p mlis-cli -- fingerprint                    # send this string to your vendor
+# ...vendor emails back license.mlis...
+cargo run -p mlis-cli -- verify-license license.mlis     # confirm it before relying on it
+```
+
+**Vendor flow** (the `mlis-license-issuer` binary — `vendor` feature, never shipped to customers):
+```powershell
+cargo run -p mlis-license --features vendor --bin mlis-license-issuer -- keygen
+# keep the private key offline; embed the printed public key in crates/mlis-license/pubkey.b64
+
+$env:MLIS_LICENSE_PRIVKEY = "<private key from keygen>"
+cargo run -p mlis-license --features vendor --bin mlis-license-issuer -- `
+  issue-license --customer "Acme Hospital" --tier enterprise --expires-in-days 365 `
+  --hw <fingerprint from the customer> --out license.mlis
+```
+
+An empty `--hw` issues an unbound (site/trial) license instead of a machine-locked one. Full
+design — signed-bytes format, `verify_strict`, fingerprint scheme, and the threat model stated
+plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080).
 
 ### Configuration (environment)
 
@@ -143,6 +175,9 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 | `MLIS_TLS_CERT` / `MLIS_TLS_KEY` | *(unset)* | enable rustls TLS on `mlis-serve` |
 | `MLIS_AUDIT_LOG` | *(unset)* | append PII-free SHA-256 audit records (JSONL) |
 | `MLIS_KEY` | *(unset)* | base64 32-byte AES-256 key → encrypt output to `<input>.json.enc` (`mlis decrypt` to read) |
+| `MLIS_LICENSE_PATH` | `license.mlis` | path to the signed license file |
+| `MLIS_LICENSE_SKIP` | *(unset)* | `1` bypasses license enforcement entirely (local development/CI) |
+| `MLIS_LICENSE_PUBKEY` | *(embedded)* | override the embedded verifying key (base64), for testing |
 
 > **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The default `rust` OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows. The Tesseract-based `native` OCR engine (`ocr-daemon`) is Linux/WSL-only.
 >
@@ -159,11 +194,13 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 │   ├── mlis-llm/      In-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`, ChatML
 │   │                  prompting, JSON repair, model integrity check
 │   ├── mlis-ocr/      In-process pure-Rust OCR: ocrs/rten, model download + integrity check
+│   ├── mlis-license/  Offline licensing: Ed25519 sign/verify, fingerprint, vendor issuer binary
+│   │                  (`vendor` feature; keygen + issue-license, never shipped to customers)
 │   ├── mlis-pipeline/ OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2
-│   │                  InferBackend (native) → JSON. Image-only.
-│   ├── mlis-cli/      CLI front-end (binary `mlis`; also `mlis decrypt`)
+│   │                  InferBackend (native) → JSON. Image-only, license-agnostic.
+│   ├── mlis-cli/      CLI front-end (binary `mlis`; also `decrypt`/`fingerprint`/`verify-license`)
 │   ├── mlis-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
-│   │                  bearer auth + TLS
+│   │                  bearer auth + TLS + license enforcement
 │   └── ocr-daemon/    Native Tesseract+Leptonica OCR engine (Linux/WSL only, accuracy fallback)
 ├── docker/           Optional container packaging: Dockerfile.serve + docker-compose.yml
 │                     for `mlis-serve` — not required for any functional code path
