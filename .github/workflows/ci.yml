@@ -231,12 +231,19 @@ jobs:
           file target/x86_64-unknown-linux-musl/release/mlis | grep -q 'statically linked'
           file target/x86_64-unknown-linux-musl/release/mlis-serve | grep -q 'statically linked'
 
+      # `mlis doctor`'s exit code also gates on the Tier-2 GGUF model, which
+      # this job deliberately doesn't download (that ~1GB fetch is the
+      # separate opt-in `native-llm` job's concern, not this one's) — so
+      # assert on the OCR-specific success line rather than doctor's overall
+      # exit code, which correctly stays non-zero here regardless.
       - name: Smoke test in a minimal Alpine container (musl libc parity)
         run: |
           docker run --rm -v "$PWD/target/x86_64-unknown-linux-musl/release:/bin2:ro" alpine:3.20 sh -c "
-            /bin2/mlis fingerprint &&
-            MLIS_LICENSE_SKIP=1 /bin2/mlis doctor
-          "
+            set -e
+            /bin2/mlis fingerprint
+            MLIS_LICENSE_SKIP=1 /bin2/mlis doctor || true
+          " | tee /tmp/doctor-output.txt
+          grep -q 'OCR (rust) detection+recognition models embedded in binary' /tmp/doctor-output.txt
 
       - uses: actions/upload-artifact@v4
         with:
