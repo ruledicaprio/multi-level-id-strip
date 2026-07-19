@@ -1,13 +1,14 @@
-# mlis-serve — axum web app (Tier 1 MRZ + Tier 2 gRPC inferer), docling OCR.
-# Multi-stage: build with the full toolchain, ship a slim runtime.
-#
-# This image uses the docling-serve OCR engine (default). The native Tesseract
-# engine (`--features native-ocr`) needs libtesseract/libleptonica in BOTH the
-# build and runtime stages and is Linux-only; see crates/ocr-daemon.
+# mlis-serve — axum web app: Tier 1 deterministic MRZ + Tier 2 in-process LLM
+# fallback + in-process pure-Rust OCR. Multi-stage: build with the full
+# toolchain, ship a slim runtime. No Docker/Python dependencies at runtime —
+# everything in this image's default build is in-process (see CHANGELOG.md,
+# v0.7.5). The native Tesseract engine (`--features native-ocr`) needs
+# libtesseract/libleptonica in BOTH the build and runtime stages and is
+# Linux-only; see crates/ocr-daemon. Not built by this Dockerfile.
 
 FROM rust:1.96 AS build
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cmake protobuf-compiler \
+ && apt-get install -y --no-install-recommends cmake \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .

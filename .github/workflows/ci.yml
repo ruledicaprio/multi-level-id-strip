@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake protobuf-compiler pkg-config clang libclang-dev \
+            cmake pkg-config clang libclang-dev \
             libtesseract-dev libleptonica-dev tesseract-ocr tesseract-ocr-eng
 
       - uses: Swatinem/rust-cache@v2
@@ -69,11 +69,6 @@ jobs:
       - name: Build with the native OCR engine
         run: cargo build -p mlis-pipeline --features native-ocr
 
-      - name: Check Tier-2 backend feature combinations (each must build alone)
-        run: |
-          cargo check -p mlis-pipeline --no-default-features --features inferer-native
-          cargo check -p mlis-pipeline --no-default-features --features inferer-grpc
-
       - name: Check OCR backend feature combinations (each must build alone)
         run: |
           cargo check -p mlis-pipeline --no-default-features --features inferer-native,ocr-native-rust
@@ -93,32 +88,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protobuf + cmake
-        run: brew install protobuf cmake
+      - name: Install cmake
+        run: brew install cmake
       - uses: Swatinem/rust-cache@v2
       - name: Test default members (excludes ocr-daemon; includes mlis-ocr)
         run: cargo test
 
-  python:
-    name: Python inferer (gRPC smoke)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: pip install "grpcio>=1.60" "grpcio-tools>=1.60" "pydantic>=2.5" "protobuf>=4.25"
-      - name: Generate stubs + smoke test
-        working-directory: python
-        run: |
-          python generate_grpc.py
-          python smoke_test.py
-
   # Real-model native LLM checks: downloads the ~1 GB GGUF, so this is opt-in
-  # (workflow_dispatch) rather than on every push/PR. Covers the same ground
-  # as `bridge` below but for the native (in-process llama.cpp) Tier-2 backend:
-  # the e2e smoke test plus the field-accuracy parity harness over samples/*.
+  # (workflow_dispatch) rather than on every push/PR: the e2e smoke test plus
+  # the field-accuracy parity harness over samples/*.
   native-llm:
     name: Native LLM (real model, opt-in)
     if: github.event_name == 'workflow_dispatch'
@@ -144,36 +122,3 @@ jobs:
 
       - name: Parity harness (field accuracy over samples/*)
         run: cargo test -p mlis-llm --test parity -- --ignored --nocapture
-
-  # Cross-language E2E: drives the REAL python inferer (mock mode) from the REAL
-  # Rust InfererClient, catching drift across the proto/tonic/grpcio boundary
-  # that the `rust` and `python` jobs above can't (each mocks the other side).
-  bridge:
-    name: Bridge (Rust client -> real Python inferer)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler
-
-      - name: Install python inferer's gRPC dependencies
-        run: pip install "grpcio>=1.60" "grpcio-tools>=1.60" "pydantic>=2.5" "protobuf>=4.25"
-
-      - name: Generate python gRPC stubs
-        working-directory: python
-        run: python generate_grpc.py
-
-      - name: Run the bridge E2E test
-        run: cargo test -p mlis-pipeline --test bridge_e2e -- --ignored
-        env:
-          PYTHON_EXE: python

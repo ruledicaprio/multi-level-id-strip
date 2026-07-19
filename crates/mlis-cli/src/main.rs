@@ -1,6 +1,6 @@
 //! mlis (CLI) — command-line front-end for the multi-level-id-strip pipeline.
 //!
-//! Run from the repository root so the inferer sidecar and OCR engine resolve:
+//! Run from the repository root so the in-process model files resolve:
 //!
 //! ```powershell
 //! cargo run -p mlis-cli -- samples/Croatian_passport_data_page.jpg
@@ -114,23 +114,6 @@ async fn doctor_command() -> Result<(), Box<dyn std::error::Error>> {
     let ocr_engine = env::var("MLIS_OCR_ENGINE").unwrap_or_else(|_| "rust".into());
     match ocr_engine.as_str() {
         "native" => println!("✅ OCR engine: native (in-process, no network check needed)"),
-        "docling" => {
-            let docling_url =
-                env::var("DOCLING_URL").unwrap_or_else(|_| "http://localhost:5001".into());
-            let addr = host_port(&docling_url);
-            let reachable = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                tokio::net::TcpStream::connect(addr.as_str()),
-            )
-            .await;
-            match reachable {
-                Ok(Ok(_)) => println!("✅ OCR (docling-serve) reachable at {docling_url}"),
-                _ => {
-                    println!("❌ OCR (docling-serve) NOT reachable at {docling_url}");
-                    ok = false;
-                }
-            }
-        }
         _ => check_rust_ocr_models(&mut ok),
     }
 
@@ -226,17 +209,4 @@ fn check_rust_ocr_models(ok: &mut bool) {
 fn check_rust_ocr_models(ok: &mut bool) {
     println!("❌ OCR engine 'rust' selected but this build lacks the `ocr-native-rust` feature");
     *ok = false;
-}
-
-/// Parses `scheme://host[:port][/path]` down to a `host:port` pair suitable
-/// for `TcpStream::connect`, defaulting the port from the scheme when absent.
-fn host_port(url: &str) -> String {
-    let without_scheme = url.split("://").nth(1).unwrap_or(url);
-    let host_and_maybe_path = without_scheme.split('/').next().unwrap_or(without_scheme);
-    if host_and_maybe_path.contains(':') {
-        host_and_maybe_path.to_string()
-    } else {
-        let default_port = if url.starts_with("https://") { 443 } else { 80 };
-        format!("{host_and_maybe_path}:{default_port}")
-    }
 }

@@ -9,12 +9,9 @@
 //! non-standard documents, technical manuals).
 //!
 //! Tier 2 is a pluggable [`InferBackend`]: [`NativeInferer`] (feature
-//! `inferer-native`, default) runs the Qwen GGUF in-process via `mlis-llm`;
-//! [`GrpcInferer`] (feature `inferer-grpc`) talks to the legacy Python
-//! sidecar over gRPC (see `proto/inferer.proto`). Either way the model stays
-//! warm for the process lifetime, so a fallback is fast rather than a cold
-//! per-document reload. See `infer::backend_from_env` for how the choice is
-//! made at runtime.
+//! `inferer-native`, default, and the only backend as of v0.7.5) runs the
+//! Qwen GGUF in-process via `mlis-llm`, staying warm for the process
+//! lifetime. See `infer::backend_from_env` for how it's constructed.
 //!
 //! Both binaries (`mlis` CLI and `mlis-serve` web server) are thin
 //! wrappers around [`Pipeline::process_document`].
@@ -23,20 +20,12 @@ pub use mrz;
 
 mod infer;
 mod ocr;
-#[cfg(feature = "inferer-grpc")]
-pub use infer::GrpcInferer;
 pub use infer::InferBackend;
 #[cfg(feature = "inferer-native")]
 pub use infer::NativeInferer;
+pub use ocr::OcrEngine;
 #[cfg(feature = "ocr-native-rust")]
 pub use ocr::RustOcrEngine;
-pub use ocr::{DoclingEngine, OcrEngine};
-
-/// gRPC client/server stubs generated from `proto/inferer.proto`.
-#[cfg(feature = "inferer-grpc")]
-pub mod inferer {
-    tonic::include_proto!("mlis.inferer");
-}
 
 use mlis_core::Extraction;
 use serde_json::Value;
@@ -47,10 +36,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
 
 pub struct Pipeline {
-    /// The OCR engine (docling-serve by default, or native on Linux/WSL).
+    /// The OCR engine (pure-Rust `ocrs`/`rten` by default, or native
+    /// Tesseract on Linux/WSL).
     ocr: Box<dyn OcrEngine>,
-    /// Tier-2 inference backend (native llama.cpp by default, or the legacy
-    /// gRPC sidecar).
+    /// Tier-2 inference backend (native llama.cpp, in-process).
     infer: Box<dyn InferBackend>,
     /// Tier 3: when set, append a PII-free audit record per processed document.
     audit_log: Option<PathBuf>,
@@ -59,9 +48,8 @@ pub struct Pipeline {
     /// Consumer GPUs (e.g. GTX 970, 3.5 GB VRAM) fit exactly one GGUF model
     /// instance — LLM inference is serialized so concurrent callers queue
     /// instead of racing the same `llama.cpp` context (also enforced,
-    /// defense-in-depth, inside each backend — see `mlis-llm`'s `NativeLlm`
-    /// generation lock and the legacy Python sidecar's `threading.Lock`).
-    /// One permit = one concurrent Tier-2 call, regardless of backend.
+    /// defense-in-depth, inside `mlis-llm`'s `NativeLlm` generation lock).
+    /// One permit = one concurrent Tier-2 call.
     llm_semaphore: Arc<Semaphore>,
     /// Requests currently queued or in flight against the inferer. Lets a
     /// caller (e.g. `mlis-serve`) reject new work fast under overload instead
@@ -134,7 +122,7 @@ impl Method {
 }
 
 pub struct PipelineResult {
-    /// OCR output from docling-serve.
+    /// OCR output (Markdown/plain text) from the active OCR engine.
     pub markdown: String,
     /// Where the Markdown was written (`<input>.md`).
     pub md_path: PathBuf,
@@ -195,10 +183,9 @@ impl Pipeline {
         self
     }
 
-    /// Configure from the environment: `MLIS_OCR_ENGINE` (`docling` | `native`)
-    /// and `DOCLING_URL`; `MLIS_INFERER` (`native` | `grpc`) and `MLIS_MODEL_PATH`
-    /// / `MLIS_INFERER_ADDR`; and Tier-3 `MLIS_AUDIT_LOG` / `MLIS_KEY` (base64
-    /// 32-byte AES-256 key).
+    /// Configure from the environment: `MLIS_OCR_ENGINE` (`rust` | `native`);
+    /// `MLIS_MODEL_PATH` / `MLIS_MODEL_N_CTX` for the Tier-2 model; and
+    /// Tier-3 `MLIS_AUDIT_LOG` / `MLIS_KEY` (base64 32-byte AES-256 key).
     pub fn from_env() -> Self {
         let mut pipeline = Self::new(ocr::engine_from_env(), infer::backend_from_env());
         pipeline.audit_log = std::env::var("MLIS_AUDIT_LOG").ok().map(PathBuf::from);
@@ -286,7 +273,7 @@ impl Pipeline {
         let (markdown, md_path, mrz_data, tier1) = self.ocr_and_tier1(input).await?;
         let mut json_path = md_path.with_extension("json");
 
-        // Tier 2: semantic JSON extraction via the persistent gRPC inferer,
+        // Tier 2: semantic JSON extraction via the in-process LLM inferer,
         // used only when Tier 1 found no checksum-valid MRZ.
         let (extracted, method, llm_error) = if let Some(value) = tier1 {
             (Some(value), Method::MrzDeterministic, None)
@@ -449,9 +436,9 @@ fn today() -> mrz::Date {
 }
 
 /// Map validated MRZ data onto the canonical [`Extraction`] schema — the same
-/// shape the LLM sidecar (Tier 2) and the WASM demo produce. Enriches with the
-/// resolved country names and a date-plausibility summary (checksum-valid does
-/// not imply in-date — see [`mrz::MrzData::validity`]).
+/// shape Tier 2 and the WASM demo produce. Enriches with the resolved country
+/// names and a date-plausibility summary (checksum-valid does not imply
+/// in-date — see [`mrz::MrzData::validity`]).
 fn extraction_from_mrz(m: &mrz::MrzData) -> Extraction {
     let v = m.validity(today());
     Extraction {
@@ -479,160 +466,73 @@ fn extraction_from_mrz(m: &mrz::MrzData) -> Extraction {
     }
 }
 
-/// Map a gRPC [`inferer::ExtractResponse`] onto the canonical [`Extraction`].
-///
-/// The inferer validates its output against a Pydantic schema and returns it in
-/// `raw_json`; that validated JSON is the source of truth, so it is preferred
-/// when present. The typed proto fields are the fallback for other clients or a
-/// server that doesn't populate `raw_json`. `extraction_method` is always set
-/// to `llm` here regardless of what the model echoed.
-#[cfg(feature = "inferer-grpc")]
-pub(crate) fn extraction_from_response(r: inferer::ExtractResponse) -> Extraction {
-    if !r.raw_json.trim().is_empty() {
-        if let Ok(mut e) = serde_json::from_str::<Extraction>(&r.raw_json) {
-            e.extraction_method = Method::Llm.as_str().to_string();
-            return e;
-        }
-    }
-    Extraction {
-        document_type: r.document_type,
-        issuing_country: r.issuing_country,
-        document_number: r.document_number,
-        surname: r.surname,
-        given_names: r.given_names,
-        nationality: r.nationality,
-        date_of_birth: r.date_of_birth,
-        sex: r.sex,
-        date_of_expiry: r.date_of_expiry,
-        personal_number: r.personal_number,
-        mrz_line: r.mrz_line,
-        extraction_method: Method::Llm.as_str().to_string(),
-        ..Extraction::default()
-    }
-}
-
-#[cfg(all(test, feature = "inferer-grpc"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use inferer::inferer_server::{Inferer, InfererServer};
-    use inferer::{ExtractChunk, ExtractRequest, ExtractResponse, HealthReply, HealthRequest};
-    use tonic::{transport::Server, Request, Response, Status};
 
-    // A mock inferer: returns typed fields for ordinary input, or a validated
-    // `raw_json` payload when the markdown contains "RAW".
-    #[derive(Default)]
-    struct MockInferer;
+    /// Minimal `OcrEngine` used only to satisfy `Pipeline::new`'s type in
+    /// tests that exercise Tier 2 directly — its `to_markdown` is never called.
+    struct NoopOcr;
 
-    #[tonic::async_trait]
-    impl Inferer for MockInferer {
-        type ExtractStreamStream = std::pin::Pin<
-            Box<
-                dyn tonic::codegen::tokio_stream::Stream<Item = Result<ExtractChunk, Status>>
-                    + Send,
-            >,
-        >;
+    #[async_trait::async_trait]
+    impl OcrEngine for NoopOcr {
+        async fn to_markdown(&self, _input: &Path) -> Result<String, PipelineError> {
+            unreachable!("these tests call extract_via_inferer directly, not to_markdown")
+        }
+        fn describe(&self) -> String {
+            "noop".into()
+        }
+    }
 
-        async fn extract(
-            &self,
-            req: Request<ExtractRequest>,
-        ) -> Result<Response<ExtractResponse>, Status> {
-            let md = req.into_inner().markdown;
-            if md.contains("RAW") {
-                let raw = serde_json::json!({
-                    "surname": "RAWNAME",
-                    "document_number": "R999",
-                    "extraction_method": "will-be-overwritten",
-                })
-                .to_string();
-                return Ok(Response::new(ExtractResponse {
-                    raw_json: raw,
-                    ..Default::default()
-                }));
-            }
-            Ok(Response::new(ExtractResponse {
-                document_type: Some("P".into()),
-                surname: Some("DOE".into()),
-                given_names: Some("JOHN".into()),
-                document_number: Some("X1234567".into()),
-                mrz_line: Some(md.chars().take(4).collect()),
-                ..Default::default()
-            }))
+    /// A mock Tier-2 backend, replacing the pre-v0.7.5 gRPC mock server —
+    /// `Pipeline`'s queue/stream behavior is backend-agnostic by design (the
+    /// whole point of [`InferBackend`]), so a plain in-process trait impl
+    /// exercises it just as well as a real network round-trip did.
+    struct MockBackend;
+
+    #[async_trait::async_trait]
+    impl InferBackend for MockBackend {
+        async fn extract(&self, markdown: &str) -> Result<Extraction, String> {
+            Ok(mock_extraction(markdown))
         }
 
         async fn extract_stream(
             &self,
-            req: Request<ExtractRequest>,
-        ) -> Result<Response<Self::ExtractStreamStream>, Status> {
-            let md = req.into_inner().markdown;
-            let result = if md.contains("RAW") {
-                let raw = serde_json::json!({
-                    "surname": "RAWNAME",
-                    "document_number": "R999",
-                    "extraction_method": "will-be-overwritten",
-                })
-                .to_string();
-                ExtractResponse {
-                    raw_json: raw,
-                    ..Default::default()
-                }
-            } else {
-                ExtractResponse {
-                    document_type: Some("P".into()),
-                    surname: Some("DOE".into()),
-                    given_names: Some("JOHN".into()),
-                    document_number: Some("X1234567".into()),
-                    mrz_line: Some(md.chars().take(4).collect()),
-                    ..Default::default()
-                }
-            };
-            let chunks = vec![
-                Ok(ExtractChunk {
-                    delta: "mock-delta".into(),
-                    done: false,
-                    result: None,
-                }),
-                Ok(ExtractChunk {
-                    delta: String::new(),
-                    done: true,
-                    result: Some(result),
-                }),
-            ];
-            Ok(Response::new(Box::pin(tokio_stream::iter(chunks))))
+            markdown: &str,
+            tx: &mpsc::Sender<ProcessEvent>,
+        ) -> Result<Extraction, String> {
+            let _ = tx.try_send(ProcessEvent::Delta("mock-delta".into()));
+            Ok(mock_extraction(markdown))
         }
 
-        async fn health(
-            &self,
-            _req: Request<HealthRequest>,
-        ) -> Result<Response<HealthReply>, Status> {
-            Ok(Response::new(HealthReply {
-                model_loaded: true,
-                model_path: "mock".into(),
-            }))
+        fn describe(&self) -> String {
+            "mock".into()
+        }
+
+        async fn health(&self) -> Result<String, String> {
+            Ok("mock healthy".into())
         }
     }
 
-    /// Start the mock inferer on an ephemeral port; returns its `http://` URL
-    /// and the server task handle.
-    async fn spawn_mock() -> (String, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            Server::builder()
-                .add_service(InfererServer::new(MockInferer))
-                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
-                .await
-                .unwrap();
-        });
-        (format!("http://{addr}"), handle)
+    fn mock_extraction(markdown: &str) -> Extraction {
+        Extraction {
+            document_type: Some("P".into()),
+            surname: Some("DOE".into()),
+            given_names: Some("JOHN".into()),
+            document_number: Some("X1234567".into()),
+            mrz_line: Some(markdown.chars().take(4).collect()),
+            extraction_method: Method::Llm.as_str().to_string(),
+            ..Extraction::default()
+        }
+    }
+
+    fn mock_pipeline() -> Pipeline {
+        Pipeline::new(Box::new(NoopOcr), Box::new(MockBackend))
     }
 
     #[tokio::test]
-    async fn tier2_maps_grpc_response_to_extraction() {
-        let (addr, server) = spawn_mock().await;
-        let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new(addr)),
-        );
+    async fn tier2_returns_backend_extraction() {
+        let pipeline = mock_pipeline();
 
         let e = pipeline
             .extract_via_inferer("P<UTO passport markdown")
@@ -642,38 +542,13 @@ mod tests {
         assert_eq!(e.surname.as_deref(), Some("DOE"));
         assert_eq!(e.given_names.as_deref(), Some("JOHN"));
         assert_eq!(e.document_number.as_deref(), Some("X1234567"));
-        assert_eq!(e.mrz_line.as_deref(), Some("P<UT")); // proves request reached server
+        assert_eq!(e.mrz_line.as_deref(), Some("P<UT")); // proves markdown reached the backend
         assert_eq!(e.extraction_method, "llm");
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn tier2_prefers_validated_raw_json() {
-        let (addr, server) = spawn_mock().await;
-        let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new(addr)),
-        );
-
-        let e = pipeline
-            .extract_via_inferer("markdown that asks for RAW json")
-            .await
-            .expect("inferer extract");
-
-        assert_eq!(e.surname.as_deref(), Some("RAWNAME"));
-        assert_eq!(e.document_number.as_deref(), Some("R999"));
-        // Method is always normalized to "llm", never what the model echoed.
-        assert_eq!(e.extraction_method, "llm");
-        server.abort();
     }
 
     #[tokio::test]
     async fn extract_via_inferer_stream_forwards_deltas_and_result() {
-        let (addr, server) = spawn_mock().await;
-        let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new(addr)),
-        );
+        let pipeline = mock_pipeline();
 
         let (tx, mut rx) = mpsc::channel(16);
         let extraction = pipeline
@@ -694,16 +569,11 @@ mod tests {
         assert_eq!(extraction.surname.as_deref(), Some("DOE"));
         assert_eq!(extraction.document_number.as_deref(), Some("X1234567"));
         assert_eq!(extraction.extraction_method, "llm");
-        server.abort();
     }
 
     #[tokio::test]
     async fn llm_queue_depth_tracks_in_flight_calls_and_returns_to_zero() {
-        let (addr, server) = spawn_mock().await;
-        let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new(addr)),
-        );
+        let pipeline = mock_pipeline();
 
         assert_eq!(pipeline.llm_queue_depth(), 0, "idle before any call");
 
@@ -727,7 +597,5 @@ mod tests {
             0,
             "guard releases after streaming completion too"
         );
-
-        server.abort();
     }
 }

@@ -191,7 +191,8 @@ async fn extract(
         }
     };
 
-    // Keep only a sanitized extension; docling-serve uses it for format detection.
+    // Keep only a sanitized extension; the OCR engine uses it for format detection
+    // (image vs. the now-unsupported PDF/HEIC — see `mlis-pipeline::ocr`).
     let ext: String = filename
         .rsplit('.')
         .next()
@@ -267,7 +268,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use mlis_pipeline::{DoclingEngine, GrpcInferer, Pipeline};
+    use mlis_pipeline::{NativeInferer, Pipeline, RustOcrEngine};
     use tower::ServiceExt;
 
     #[test]
@@ -300,8 +301,8 @@ mod tests {
     #[tokio::test]
     async fn extract_rejects_with_503_when_queue_is_full() {
         let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new("http://127.0.0.1:50051")),
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
         );
         // max_queue_depth: 0 means "full" even with zero in-flight requests —
         // exercises the rejection branch without needing a real inferer.
@@ -332,8 +333,8 @@ mod tests {
     /// middleware itself).
     fn state_with_token(token: Option<&str>) -> Arc<AppState> {
         let pipeline = Pipeline::new(
-            Box::new(DoclingEngine::new("http://localhost:5001")),
-            Box::new(GrpcInferer::new("http://127.0.0.1:50051")),
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
         );
         Arc::new(AppState {
             pipeline,

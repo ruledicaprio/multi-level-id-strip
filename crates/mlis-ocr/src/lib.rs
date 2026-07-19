@@ -1,15 +1,16 @@
-//! In-process pure-Rust OCR for Tier 1 — replaces the default
-//! `docling-serve` Docker OCR service with `ocrs`/`rten`, mirroring
-//! `mlis-llm`'s `NativeLlm` naming/lifecycle pattern but for text
-//! detection+recognition instead of generation.
+//! In-process pure-Rust OCR for Tier 1 via `ocrs`/`rten` — the default engine
+//! since v0.7.0 (it replaced the `docling-serve` Docker OCR service that
+//! version), mirroring `mlis-llm`'s `NativeLlm` naming/lifecycle pattern but
+//! for text detection+recognition instead of generation.
 //!
 //! [`NativeOcr`] loads both `.rten` weight files once and is kept warm for
 //! the process lifetime; `recognize` is blocking — callers on an async
 //! runtime (see `mlis-pipeline`) must run it via `spawn_blocking`, mirroring
 //! how the native LLM inferer is wrapped.
 //!
-//! Image-only: `ocrs` has no PDF parsing, so PDF input keeps routing to
-//! `MLIS_OCR_ENGINE=docling` at the `mlis-pipeline` layer.
+//! Image-only: `ocrs` has no PDF parsing, and as of v0.7.5 there is no other
+//! engine to route PDF input to — PDF is rejected outright at the
+//! `mlis-pipeline` layer (see `crates/mlis-pipeline/src/ocr.rs`).
 
 pub mod download;
 pub mod verify;
