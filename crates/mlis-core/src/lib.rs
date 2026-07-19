@@ -9,6 +9,7 @@
 //! because it is the one type the whole system agrees on.
 
 use serde::{Deserialize, Serialize};
+use zeroize::ZeroizeOnDrop;
 
 #[cfg(feature = "security")]
 pub mod audit;
@@ -24,7 +25,14 @@ pub mod crypt;
 /// omitted from JSON until populated, keeping artifacts stable.
 ///
 /// [`validity`]: Extraction::validity
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `ZeroizeOnDrop`: best-effort wipe of the PII-bearing `String` fields when
+/// this value is dropped, shrinking the window a swap file or crash dump
+/// could leak identity data. `mrz_checksums_valid` and `validity` carry no
+/// PII (plain `bool`/`i64` summaries) and are `#[zeroize(skip)]`, since
+/// `Copy` types don't implement `Zeroize`. This does not cover copies made
+/// by `serde_json` during (de)serialization — see `docs/ARCHITECTURE.md` §7.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ZeroizeOnDrop)]
 pub struct Extraction {
     #[serde(default)]
     pub document_type: Option<String>,
@@ -57,9 +65,11 @@ pub struct Extraction {
     pub mrz_line: Option<String>,
     /// `true` when every ICAO 9303 check digit validated (Tier 1 only).
     #[serde(default)]
+    #[zeroize(skip)]
     pub mrz_checksums_valid: Option<bool>,
     /// Date-plausibility summary — populated by the MRZ tier (see Phase 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[zeroize(skip)]
     pub validity: Option<Validity>,
     /// Which producer created this record: `mrz-deterministic`, `llm`, or
     /// `mrz-wasm-client`.
@@ -99,14 +109,15 @@ mod tests {
     fn core_keys_always_present_metadata_omitted() {
         // A record with only core fields set: the ICAO keys must all appear
         // (null when absent), while unpopulated metadata is omitted entirely.
-        let e = Extraction {
-            document_type: Some("P".into()),
-            issuing_country: Some("UTO".into()),
-            surname: Some("ERIKSSON".into()),
-            mrz_checksums_valid: Some(true),
-            extraction_method: "mrz-deterministic".into(),
-            ..Extraction::default()
-        };
+        // Struct-update syntax (`..Extraction::default()`) can't be used here:
+        // `Extraction` implements `Drop` (via `ZeroizeOnDrop`), and Rust
+        // disallows partial moves out of a base value of a `Drop` type.
+        let mut e = Extraction::default();
+        e.document_type = Some("P".into());
+        e.issuing_country = Some("UTO".into());
+        e.surname = Some("ERIKSSON".into());
+        e.mrz_checksums_valid = Some(true);
+        e.extraction_method = "mrz-deterministic".into();
         let v = serde_json::to_value(&e).unwrap();
         let obj = v.as_object().unwrap();
 
@@ -139,19 +150,19 @@ mod tests {
 
     #[test]
     fn roundtrips_through_json() {
-        let e = Extraction {
-            document_type: Some("I".into()),
-            issuing_country: Some("SVN".into()),
-            issuing_country_name: Some("Slovenia".into()),
-            validity: Some(Validity {
-                dates_well_formed: true,
-                in_date: true,
-                dob_before_expiry: true,
-                days_until_expiry: Some(1234),
-            }),
-            extraction_method: "llm".into(),
-            ..Extraction::default()
-        };
+        // See the comment above `core_keys_always_present_metadata_omitted`
+        // for why struct-update syntax isn't used here.
+        let mut e = Extraction::default();
+        e.document_type = Some("I".into());
+        e.issuing_country = Some("SVN".into());
+        e.issuing_country_name = Some("Slovenia".into());
+        e.validity = Some(Validity {
+            dates_well_formed: true,
+            in_date: true,
+            dob_before_expiry: true,
+            days_until_expiry: Some(1234),
+        });
+        e.extraction_method = "llm".into();
         let s = serde_json::to_string(&e).unwrap();
         let back: Extraction = serde_json::from_str(&s).unwrap();
         assert_eq!(e, back);

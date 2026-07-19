@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
+use zeroize::Zeroizing;
 
 pub struct Pipeline {
     /// The OCR engine (pure-Rust `ocrs`/`rten` by default, or native
@@ -44,7 +45,8 @@ pub struct Pipeline {
     /// Tier 3: when set, append a PII-free audit record per processed document.
     audit_log: Option<PathBuf>,
     /// Tier 3: when set, encrypt the output JSON (AES-256-GCM) to `.json.enc`.
-    encrypt_key: Option<[u8; 32]>,
+    /// `Zeroizing` wipes the key from memory when the `Pipeline` is dropped.
+    encrypt_key: Option<Zeroizing<[u8; 32]>>,
     /// Consumer GPUs (e.g. GTX 970, 3.5 GB VRAM) fit exactly one GGUF model
     /// instance — LLM inference is serialized so concurrent callers queue
     /// instead of racing the same `llama.cpp` context (also enforced,
@@ -179,7 +181,7 @@ impl Pipeline {
 
     /// Encrypt the output JSON with the given AES-256 key.
     pub fn with_encrypt_key(mut self, key: [u8; 32]) -> Self {
-        self.encrypt_key = Some(key);
+        self.encrypt_key = Some(Zeroizing::new(key));
         self
     }
 
@@ -394,7 +396,7 @@ impl Pipeline {
         method: Method,
         mrz: Option<&mrz::MrzData>,
     ) -> std::io::Result<PathBuf> {
-        let pretty = serde_json::to_string_pretty(value).expect("Value serializes");
+        let pretty = Zeroizing::new(serde_json::to_string_pretty(value).expect("Value serializes"));
 
         let written = if let Some(key) = &self.encrypt_key {
             let blob =
@@ -403,7 +405,7 @@ impl Pipeline {
             tokio::fs::write(&enc_path, blob).await?;
             enc_path
         } else {
-            tokio::fs::write(json_path, pretty).await?;
+            tokio::fs::write(json_path, pretty.as_bytes()).await?;
             json_path.to_path_buf()
         };
 
@@ -515,15 +517,17 @@ mod tests {
     }
 
     fn mock_extraction(markdown: &str) -> Extraction {
-        Extraction {
-            document_type: Some("P".into()),
-            surname: Some("DOE".into()),
-            given_names: Some("JOHN".into()),
-            document_number: Some("X1234567".into()),
-            mrz_line: Some(markdown.chars().take(4).collect()),
-            extraction_method: Method::Llm.as_str().to_string(),
-            ..Extraction::default()
-        }
+        // Struct-update syntax (`..Extraction::default()`) can't be used
+        // here: `Extraction` implements `Drop` (via `ZeroizeOnDrop`), and
+        // Rust disallows partial moves out of a base value of a `Drop` type.
+        let mut e = Extraction::default();
+        e.document_type = Some("P".into());
+        e.surname = Some("DOE".into());
+        e.given_names = Some("JOHN".into());
+        e.document_number = Some("X1234567".into());
+        e.mrz_line = Some(markdown.chars().take(4).collect());
+        e.extraction_method = Method::Llm.as_str().to_string();
+        e
     }
 
     fn mock_pipeline() -> Pipeline {

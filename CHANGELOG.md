@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-07-19
+
+PII memory hardening + ingest-path fuzzing: the highest-value in-memory PII structures are now
+wiped on drop, and the untrusted OCR ingest path (`mrz`'s checksum-verified repair logic, which
+also compiles to WASM for the public browser demo) is fuzz-tested. This is the fifth step on the
+road to a single static musl binary — see `docs/ARCHITECTURE.md` §10.
+
+### Added
+- **PII memory hardening (`zeroize`/`ZeroizeOnDrop`, best-effort):** `mlis_core::Extraction`
+  derives `ZeroizeOnDrop`; `mlis_core::crypt::key_from_base64` now returns `Zeroizing<[u8; 32]>`
+  (and zeroizes the intermediate decoded `Vec<u8>`), threaded through `Pipeline.encrypt_key`; the
+  pretty-printed JSON in `Pipeline::write_outputs` and the raw Tier-2 LLM output + ChatML prompt in
+  `mlis-llm::NativeLlm::generate` are wrapped in `Zeroizing<String>`. `mrz::MrzData` gets the same
+  treatment behind a new *optional* `zeroize` feature (mirrors the crate's existing optional
+  `serde` feature) so `mrz-wasm`'s `wasm32-unknown-unknown` build — which never enables it — stays
+  zero-dependency; `mlis-pipeline` enables `mrz/zeroize`. Documented limitations in
+  `docs/ARCHITECTURE.md` §7: this does not cover `serde_json`'s internal copies, on-disk
+  `.md`/`.json` plaintext (only the optional `MLIS_KEY`-encrypted `.json.enc` is protected at
+  rest), or `PipelineResult.markdown` (left a plain `String`, since it's returned to callers for
+  display/persistence).
+- **`mrz` proptest suite** (`crates/mrz/tests/fuzz_props.rs`, new dev-dependency): 256-case
+  property tests asserting `find_and_parse`/`parse_td1`/`parse_td2`/`parse_td3` never panic on
+  arbitrary input — domain-biased generators over the MRZ charset plus real OCR-noise characters,
+  plus single-character mutations of the crate's own ICAO specimen constants. Runs on every push
+  in CI (`cargo test --workspace`, both the Linux and macOS jobs) — an always-on regression net.
+- **`fuzz/`** (new `cargo-fuzz`/libFuzzer crate, its own detached Cargo workspace so it's invisible
+  to `cargo build/test --workspace` at the repo root): two coverage-guided fuzz targets,
+  `mrz_find_and_parse` and `mrz_parse_td`, seeded from the same ICAO specimens plus verbatim
+  OCR-garbled samples (tesseract `K`/`L` misreads, docling `&lt;`-escaped merged lines). Runnable
+  locally (`cargo fuzz run <target>`) or via the new opt-in `fuzz` CI job (`workflow_dispatch`,
+  nightly toolchain) — deliberately not a required PR check, same reasoning as `native-llm`.
+
+### Out of scope (documented, not implemented)
+- Fuzzing image decode (heavily fuzzed upstream in the `image` crate) and
+  `mlis-llm::repair::parse_extraction` (would drag the `llama-cpp-2`/cmake build into the fuzz job).
+- Eliminating `serde_json::Value` intermediate PII copies (would need a custom secret type threaded
+  through serde).
+- At-rest disk PII beyond the existing optional `MLIS_KEY` `.json` encryption.
+
 ## [0.8.0] — 2026-07-19
 
 Offline cryptographic licensing: the shipped `mlis`/`mlis-serve` binaries now require an

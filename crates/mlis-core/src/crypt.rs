@@ -10,6 +10,7 @@ use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, Nonce};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use std::fmt;
+use zeroize::Zeroizing;
 
 const NONCE_LEN: usize = 12;
 
@@ -38,10 +39,16 @@ impl fmt::Display for CryptError {
 
 impl std::error::Error for CryptError {}
 
-/// Decode a base64 string into a 32-byte AES-256 key.
-pub fn key_from_base64(s: &str) -> Result<[u8; 32], CryptError> {
-    let bytes = STANDARD.decode(s.trim()).map_err(|_| CryptError::BadKey)?;
-    bytes.try_into().map_err(|_| CryptError::BadKey)
+/// Decode a base64 string into a 32-byte AES-256 key, wrapped so it is wiped
+/// from memory when dropped. The intermediate decoded `Vec<u8>` is also
+/// zeroized before being discarded, so the plaintext key doesn't linger in
+/// two buffers.
+pub fn key_from_base64(s: &str) -> Result<Zeroizing<[u8; 32]>, CryptError> {
+    let mut bytes = STANDARD.decode(s.trim()).map_err(|_| CryptError::BadKey)?;
+    let result: Result<[u8; 32], CryptError> =
+        bytes.as_slice().try_into().map_err(|_| CryptError::BadKey);
+    zeroize::Zeroize::zeroize(&mut bytes);
+    result.map(Zeroizing::new)
 }
 
 /// Encrypt `plaintext` with AES-256-GCM. Output = `nonce (12B) ‖ ciphertext`.
@@ -116,6 +123,6 @@ mod tests {
     fn key_from_base64_validates_length() {
         assert!(key_from_base64("c2hvcnQ=").is_err()); // "short" → 5 bytes
         let good = STANDARD.encode([0u8; 32]);
-        assert_eq!(key_from_base64(&good).unwrap(), [0u8; 32]);
+        assert_eq!(*key_from_base64(&good).unwrap(), [0u8; 32]);
     }
 }

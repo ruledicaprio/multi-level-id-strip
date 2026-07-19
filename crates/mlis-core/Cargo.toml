@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Unconditional: Extraction (PII) is always compiled, not behind `security`.
+zeroize = { version = "1", features = ["derive"] }
 # Tier-3 security (feature `security`): audit hashing + payload encryption.
 sha2 = { version = "0.10", optional = true }
 aes-gcm = { version = "0.10", optional = true }

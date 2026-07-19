@@ -22,6 +22,8 @@
 
 #[cfg(feature = "serde")]
 use serde::Serialize;
+#[cfg(feature = "zeroize")]
+use zeroize::ZeroizeOnDrop;
 
 mod checksum;
 mod countries;
@@ -66,9 +68,17 @@ pub enum Format {
 }
 
 /// Parsed and validated MRZ data.
+///
+/// The `zeroize` feature (off by default, kept off for the `wasm32-unknown-unknown`
+/// browser-demo build so this crate stays zero-dependency there) derives
+/// `ZeroizeOnDrop`, wiping the PII-bearing `String` fields from memory when a
+/// value is dropped. `format` and `checks` carry no PII and are `Copy`, so
+/// they're `#[zeroize(skip)]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "zeroize", derive(ZeroizeOnDrop))]
 pub struct MrzData {
+    #[cfg_attr(feature = "zeroize", zeroize(skip))]
     pub format: Format,
     /// Document code, e.g. "P" (passport), "ID"/"I" (identity card).
     pub document_type: String,
@@ -90,6 +100,7 @@ pub struct MrzData {
     pub personal_number: Option<String>,
     /// The raw MRZ lines, newline-joined, exactly as validated.
     pub mrz_lines: String,
+    #[cfg_attr(feature = "zeroize", zeroize(skip))]
     pub checks: Checks,
 }
 
