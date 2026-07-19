@@ -162,3 +162,79 @@ jobs:
 
       - name: Fuzz mrz_parse_td (60s)
         run: cargo fuzz run mrz_parse_td -- -max_total_time=60
+
+  # Static x86_64-unknown-linux-musl release build — the "copy one file to an
+  # air-gapped machine" artifact (see docs/ARCHITECTURE.md §10). New,
+  # C++-heavy cross-compile infra as of v1.0.0, so this starts opt-in like
+  # native-llm/fuzz above; promote to a required check once it's proven
+  # stable over a few runs (tracked as a v1.0.1 fast-follow, see CHANGELOG).
+  rust-musl:
+    name: Rust (musl static release, opt-in)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      ZIG_VERSION: "0.13.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+
+      - name: Install Zig (pinned)
+        run: |
+          curl -fL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt
+          sudo ln -s "/opt/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig
+          zig version
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Cache OCR .rten models
+        uses: actions/cache@v4
+        with:
+          path: |
+            text-detection.rten
+            text-recognition.rten
+          key: ocrs-rten-models-v1
+
+      - name: Download + checksum-verify the OCR .rten models
+        run: |
+          for f in text-detection.rten text-recognition.rten; do
+            if [ ! -f "$f" ]; then
+              curl -fL --retry 3 -o "$f" "https://ocrs-models.s3-accelerate.amazonaws.com/$f"
+            fi
+          done
+          echo "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca  text-detection.rten" | sha256sum -c -
+          echo "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e  text-recognition.rten" | sha256sum -c -
+
+      - name: Build static musl release binaries (models embedded)
+        run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+
+      - name: Confirm no native-ocr/Tesseract in the musl build (negative check)
+        run: |
+          if cargo tree --target x86_64-unknown-linux-musl -p mlis-cli --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded | grep -qi ocr-daemon; then
+            echo "::error::ocr-daemon/Tesseract must not be part of the musl build" && exit 1
+          fi
+
+      - name: Confirm the binaries are statically linked
+        run: |
+          file target/x86_64-unknown-linux-musl/release/mlis | grep -q 'statically linked'
+          file target/x86_64-unknown-linux-musl/release/mlis-serve | grep -q 'statically linked'
+
+      - name: Smoke test in a minimal Alpine container (musl libc parity)
+        run: |
+          docker run --rm -v "$PWD/target/x86_64-unknown-linux-musl/release:/bin2:ro" alpine:3.20 sh -c "
+            /bin2/mlis fingerprint &&
+            MLIS_LICENSE_SKIP=1 /bin2/mlis doctor
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlis-musl-x86_64
+          path: |
+            target/x86_64-unknown-linux-musl/release/mlis
+            target/x86_64-unknown-linux-musl/release/mlis-serve
