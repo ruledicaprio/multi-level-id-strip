@@ -211,12 +211,18 @@ jobs:
           echo "f15cfb56bd02c4bf478a20343986504a1f01e1665c2b3a0ad66340f054b1b5ca  text-detection.rten" | sha256sum -c -
           echo "e484866d4cce403175bd8d00b128feb08ab42e208de30e42cd9889d8f1735a6e  text-recognition.rten" | sha256sum -c -
 
+      # `inferer-native`/`ocr-native-rust` are mlis-pipeline features, not
+      # mlis-cli/mlis-serve features — they're already on by default via
+      # mlis-pipeline's own `default = ["inferer-native", "ocr-native-rust"]`
+      # (a path dependency's default features aren't affected by
+      # `--no-default-features` on the top-level packages being built), so
+      # only `ocr-embedded` needs to be requested explicitly here.
       - name: Build static musl release binaries (models embedded)
-        run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded
+        run: cargo zigbuild --release --target x86_64-unknown-linux-musl -p mlis-cli -p mlis-serve --features ocr-embedded
 
       - name: Confirm no native-ocr/Tesseract in the musl build (negative check)
         run: |
-          if cargo tree --target x86_64-unknown-linux-musl -p mlis-cli --no-default-features --features ocr-native-rust,inferer-native,ocr-embedded | grep -qi ocr-daemon; then
+          if cargo tree --target x86_64-unknown-linux-musl -p mlis-cli --features ocr-embedded | grep -qi ocr-daemon; then
             echo "::error::ocr-daemon/Tesseract must not be part of the musl build" && exit 1
           fi
 
