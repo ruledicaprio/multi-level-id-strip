@@ -44,7 +44,7 @@ The Rust toolchain and `std` are dual MIT/Apache-2.0 (© The Rust Project Develo
 
 | Component | License / Attribution |
 | --- | --- |
-| `tesseract.js` (browser OCR, loaded via CDN in the demo) | Apache-2.0 |
+| `tesseract.js` 5.1.1 (browser OCR — fetched + SHA-256-verified at deploy time by `web/fetch-vendor.sh`, served same-origin; no CDN at runtime) | Apache-2.0 |
 | Qwen 2.5 1.5B Instruct GGUF (downloaded at runtime, not vendored) | Apache-2.0 © Alibaba Cloud |
 | **OCR-B model `web/tessdata/mrz.traineddata`** | **BSD-3-Clause © DoubangoTelecom** — see below |
 

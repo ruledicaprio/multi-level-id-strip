@@ -118,13 +118,19 @@ function cloneCanvas(canvas) {
 
 // Two OCR models: 'mrz' is fine-tuned on the OCR-B font MRZs are printed in
 // (vendored, BSD-3-Clause © DoubangoTelecom — see tessdata/LICENSE); 'eng'
-// is the generic fallback from the tesseract.js CDN. Both are restricted to
-// the MRZ charset — the JS equivalent of the native engine's allowed_chars.
+// is the generic fallback. Both are restricted to the MRZ charset — the JS
+// equivalent of the native engine's allowed_chars. Every runtime asset is
+// same-origin: fetched + SHA-256-verified at deploy time by fetch-vendor.sh,
+// so the page makes zero CDN requests.
 const workers = {};
 function getWorker(lang) {
   workers[lang] ??= (async () => {
-    const opts = lang === 'mrz' ? { langPath: './tessdata', gzip: false } : {};
-    const worker = await Tesseract.createWorker(lang, 1, opts);
+    const worker = await Tesseract.createWorker(lang, 1, {
+      workerPath: './vendor/worker.min.js',
+      corePath: './vendor',
+      langPath: './tessdata',
+      gzip: lang !== 'mrz', // mrz.traineddata is committed uncompressed
+    });
     await worker.setParameters({ tessedit_char_whitelist: MRZ_CHARS });
     return worker;
   })();
