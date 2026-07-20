@@ -169,7 +169,7 @@ curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:
 
 ```powershell
 docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
-docker run --rm -v "${PWD}:/work" `
+docker run --rm -e MLIS_LICENSE_SKIP=1 -v "${PWD}:/work" `
   -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry `
   -w /work mlis-builder:latest cargo run -p mlis-cli -- doctor
 ```
@@ -181,17 +181,23 @@ docker run --rm -v "${PWD}:/work" `
 
 ```bash
 docker build -f docker/Dockerfile.builder -t mlis-builder:latest .
-docker run --rm -v "$PWD:/work" \
+docker run --rm -e MLIS_LICENSE_SKIP=1 -v "$PWD:/work" \
   -v mlis_target:/work/target -v mlis_cargo_registry:/usr/local/cargo/registry \
   -w /work mlis-builder:latest cargo run -p mlis-cli -- doctor
 ```
 
 </details>
 
-Swap the trailing `cargo run -p mlis-cli -- doctor` for any of steps 2-4 above. Git Bash on
+Swap the trailing `cargo run -p mlis-cli -- doctor` for any of steps 2-4 above (for step 4,
+`mlis-serve`, drop `-e MLIS_LICENSE_SKIP=1` and add `-p 8080:8080` instead). Git Bash on
 Windows needs one extra prefix: `MSYS_NO_PATHCONV=1` before `docker run` (otherwise it mangles
 `-w /work` into a Windows path) — see [CONTRIBUTING.md](CONTRIBUTING.md#building--testing) for
 the full build/test/cross-compile reference.
+
+> **Env vars don't cross into the container on their own.** Setting `$env:MLIS_LICENSE_SKIP = "1"`
+> (or `export MLIS_LICENSE_SKIP=1`) only affects your host shell — `docker run` needs its own
+> `-e MLIS_LICENSE_SKIP=1` to forward it in, as shown above. Same for any other `MLIS_*` variable
+> you want the containerized run to see.
 
 ## ⚙️ Configuration
 
