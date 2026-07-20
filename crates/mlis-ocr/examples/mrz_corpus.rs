@@ -23,6 +23,8 @@ const CORPUS: &[(&str, &str)] = &[
     ("Passport_of_Serbia_ID_2009_version.jpg", "000000000"),
     ("SerbianID_back.png", "955555546"),
     ("Slovenian_ID_Card_2022_-_Rear.jpg", "IE9876543"),
+    ("China_Passport_Specimen.webp", "E00000000"),
+    ("Vietnam_Passport_Specimen.webp", "E00000000"),
     // Known-MISS baseline (see Phase 0 of the multiscript-MRZ-robustness
     // plan), NOT a real ground-truth doc number: this specimen is a
     // publicly-posted "redacted sample" scan whose surname/given-name/
