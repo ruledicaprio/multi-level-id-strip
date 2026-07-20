@@ -103,6 +103,15 @@ specimen, confirm it meets **both**:
    images watermarked by novelty/fake-ID-document vendors (e.g. "mrpassports.com"-style sites) —
    different in kind from an official specimen even if the image itself looks clean.
 
+**Instant first-pass checking.** `./scripts/watch-samples.ps1` watches `samples/` and, the moment
+a new image appears, runs `crates/mlis-ocr/examples/check_sample.rs` against it (via the
+`mlis-builder` Docker image) and opens the image for you. It reports whether the file OCRs to a
+checksum-valid MRZ and whether the word "specimen" appears anywhere in the OCR text — a fast,
+non-authoritative signal, not a verdict. It does not replace the provenance/PII judgment above; a
+clean OCR hit is not proof of a genuine specimen, and a miss is not proof it isn't. To check a
+single file by hand instead: `cargo run -p mlis-ocr --release --example check_sample -- samples/<file>`
+in the Docker image.
+
 When in doubt, ask rather than include. Once accepted: rename to the
 `<Country>_<DocType>_Specimen[_<Variant>].<ext>` convention (full country name, e.g.
 `North_Macedonia` not `North_macedonia`), run `cargo run -p mlis-ocr --release --example
