@@ -11,39 +11,127 @@ use std::env;
 use std::io::Write;
 use std::path::Path;
 
+/// Interior width of the banner box (character count between the two `│`
+/// border columns). Wide enough for the longest centered line (the tagline).
+const BOX_WIDTH: usize = 76;
+
+/// Centers `text` in a field of `width` chars, padding with spaces on both
+/// sides. Truncates instead of panicking if `text` is already too long, so a
+/// future edit that overruns `BOX_WIDTH` degrades gracefully rather than
+/// crashing `--help`.
+fn center(text: &str, width: usize) -> String {
+    let len = text.chars().count();
+    if len >= width {
+        return text.chars().take(width).collect();
+    }
+    let pad = width - len;
+    let left = pad / 2;
+    let right = pad - left;
+    format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
+}
+
+fn box_line(text: &str) -> String {
+    format!("│{}│", center(text, BOX_WIDTH))
+}
+
+/// Static ASCII banner in the style of a boxed CLI splash screen — printed
+/// once for `--help`/no-args, never on the hot extraction path (stdout there
+/// stays script/jq-friendly JSON).
+fn banner() -> String {
+    const M: [&str; 5] = ["█   █", "██ ██", "█ █ █", "█   █", "█   █"];
+    const L: [&str; 5] = ["█    ", "█    ", "█    ", "█    ", "█████"];
+    const I: [&str; 5] = ["█████", "  █  ", "  █  ", "  █  ", "█████"];
+    const S: [&str; 5] = [" ████", "█    ", " ███ ", "    █", "████ "];
+
+    let mut out = String::new();
+    out.push_str(&format!("┌{}┐\n", "─".repeat(BOX_WIDTH)));
+    out.push_str(&format!("{}\n", box_line("")));
+    out.push_str(&format!("{}\n", box_line("[ MULTI-LEVEL ID STRIP ]")));
+    out.push_str(&format!("{}\n", box_line(&"-".repeat(50))));
+    out.push_str(&format!("{}\n", box_line("")));
+    for row in 0..5 {
+        let line = format!("{}  {}  {}  {}", M[row], L[row], I[row], S[row]);
+        out.push_str(&format!("{}\n", box_line(&line)));
+    }
+    out.push_str(&format!("{}\n", box_line("")));
+    out.push_str(&format!(
+        "{}\n",
+        box_line("Offline ICAO 9303 ID extraction — zero cloud calls, air-gapped by design")
+    ));
+    out.push_str(&format!("{}\n", box_line("")));
+    out.push_str(&format!(
+        "{}\n",
+        box_line("[ MRZ TIER-1 ]  [ LLM TIER-2 ]  [ ED25519 LICENSE ]  [ AIR-GAPPED ]")
+    ));
+    out.push_str(&format!("{}\n", box_line("")));
+    out.push_str(&format!("└{}┘", "─".repeat(BOX_WIDTH)));
+    out
+}
+
+fn print_usage() {
+    println!("{}", banner());
+    println!();
+    println!(
+        "mlis v{}  |  github.com/ruledicaprio/multi-level-id-strip",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("{}", "-".repeat(BOX_WIDTH + 2));
+    println!();
+    println!("Commands");
+    println!("  mlis <path_to_image>          extract (needs a license — see below)");
+    println!("  mlis decrypt <file.json.enc>  decrypt (needs MLIS_KEY)");
+    println!("  mlis doctor                   preflight: OCR/inferer/license, config sanity");
+    println!(
+        "  mlis fingerprint              print this machine's fingerprint (send to your vendor)"
+    );
+    println!("  mlis verify-license [path]    verify a license file (default: MLIS_LICENSE_PATH or ./license.mlis)");
+    println!("  mlis --help, -h               show this message");
+    println!("  mlis --version, -V            show the version");
+    println!();
+    println!("No license yet? Run `mlis fingerprint` and contact your vendor, or set");
+    println!("MLIS_LICENSE_SKIP=1 to bypass the gate for local development.");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage:");
-        eprintln!("  cargo run -p mlis-cli -- <path_to_image>          extract (needs a license — see below)");
-        eprintln!("  cargo run -p mlis-cli -- decrypt <file.json.enc>  decrypt (needs MLIS_KEY)");
-        eprintln!("  cargo run -p mlis-cli -- doctor                   preflight: OCR/inferer/license, config sanity");
-        eprintln!("  cargo run -p mlis-cli -- fingerprint              print this machine's fingerprint (send to your vendor)");
-        eprintln!("  cargo run -p mlis-cli -- verify-license [path]    verify a license file (default: MLIS_LICENSE_PATH or ./license.mlis)");
+        print_usage();
         return Ok(());
     }
 
-    // `mlis decrypt <file>` — decrypt an AES-256-GCM payload to stdout.
-    if args[1] == "decrypt" {
-        return decrypt_command(args.get(2).map(String::as_str));
+    match args[1].as_str() {
+        "--help" | "-h" => {
+            print_usage();
+            return Ok(());
+        }
+        "--version" | "-V" => {
+            println!("mlis {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        // `mlis decrypt <file>` — decrypt an AES-256-GCM payload to stdout.
+        "decrypt" => return decrypt_command(args.get(2).map(String::as_str)),
+        // `mlis doctor` — preflight checks before running the pipeline for real.
+        "doctor" => return doctor_command().await,
+        // `mlis fingerprint` / `mlis verify-license` — diagnostic/recovery
+        // commands that must work WITHOUT a valid license (you need
+        // `fingerprint` to obtain one in the first place), so neither is gated
+        // by `check_license` below.
+        "fingerprint" => {
+            println!("{}", mlis_license::machine_fingerprint());
+            return Ok(());
+        }
+        "verify-license" => return verify_license_command(args.get(2).map(String::as_str)),
+        _ => {}
     }
 
-    // `mlis doctor` — preflight checks before running the pipeline for real.
-    if args[1] == "doctor" {
-        return doctor_command().await;
-    }
-
-    // `mlis fingerprint` / `mlis verify-license` — diagnostic/recovery
-    // commands that must work WITHOUT a valid license (you need
-    // `fingerprint` to obtain one in the first place), so neither is gated
-    // by `check_license` below.
-    if args[1] == "fingerprint" {
-        println!("{}", mlis_license::machine_fingerprint());
+    // Anything else is either a file path to extract or a typo'd flag/command
+    // — an unknown `-`-prefixed arg is almost never a real filename, so give
+    // a targeted error instead of a confusing "File not found: --hlep".
+    if args[1].starts_with('-') {
+        eprintln!("❌ Unknown option: {}", args[1]);
+        eprintln!("   Run `mlis --help` for usage.");
         return Ok(());
-    }
-    if args[1] == "verify-license" {
-        return verify_license_command(args.get(2).map(String::as_str));
     }
 
     let input = Path::new(&args[1]);
@@ -60,6 +148,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let pipeline = Pipeline::from_env();
+    println!(
+        "⚙️  [Rust] config: ocr={}, inferer={}, license={}",
+        pipeline.ocr_engine(),
+        pipeline.infer_describe(),
+        if env::var("MLIS_LICENSE_SKIP").as_deref() == Ok("1") {
+            "skipped".to_string()
+        } else {
+            env::var("MLIS_LICENSE_PATH").unwrap_or_else(|_| DEFAULT_LICENSE_PATH.into())
+        }
+    );
     println!(
         "🔄 [Rust] Uploading and processing local file: {} (ocr: {})...",
         input.display(),
