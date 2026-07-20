@@ -89,8 +89,10 @@ with a copy button, then wiped. **No data is ever persistent — there is no ser
 - [Configuration](#-configuration)
 - [Licensing](#-licensing-v080)
 - [Static musl release](#-static-musl-release-v100)
+- [Synthetic document generation](#-synthetic-document-generation-v20-new)
 - [Repository Layout](#-repository-layout)
 - [Security](#-security-tier-3)
+- [More documentation](#-more-documentation)
 - [Acknowledgments](#-acknowledgments)
 - [License](#-license)
 
@@ -273,6 +275,27 @@ for the full toolchain rationale (why Zig over `cross-rs`/manual `musl-gcc`) and
 limitations. `docker/Dockerfile.musl` packages the same binaries into a minimal `FROM scratch`
 image, if you'd rather run it in a container than as a raw binary.
 
+## 🧪 Synthetic document generation (v2.0, new)
+
+`synthpass generate` produces fictional, fully-labelled passport images for testing OCR/extraction
+pipelines and benchmarking — no license required, since no real PII is ever involved:
+
+```powershell
+cargo run -p synthpass-cli -- generate --count 3 --seed 1 --profile mobile --out-dir out/
+```
+
+Each document gets a deterministic identity (same seed → byte-identical output), a valid TD3 MRZ
+(`mrz::format_td3`, checksum-verified), and a capture-degradation pass (`clean` | `mobile` |
+`scanner` | `worn` | `border-kiosk`) simulating real-world capture conditions. Every render carries
+a **mandatory synthetic watermark and a generic, non-country template** — enforced in code, not
+just documentation — plus a `.json` sidecar with per-field ground-truth bounding boxes for training
+or evaluation. This is the first milestone (M1–M3) of the platform's generation half; see
+[docs/ROADMAP.md](docs/ROADMAP.md) for what's next and [docs/VISION.md](docs/VISION.md) for why.
+
+> **Status:** VIZ/MRZ text currently renders as placeholder bars until OFL fonts are vendored at
+> `crates/synthpass-gen/fonts/` (see that directory's README) — labels and the watermark are
+> already 100% accurate regardless.
+
 ## 📁 Repository Layout
 
 ```
@@ -280,6 +303,8 @@ image, if you'd rather run it in a container than as a raw binary.
 │   ├── mrz/           Zero-dep ICAO 9303 engine: TD1/TD2/TD3, checksum-verified OCR
 │   │                  repair, date-plausibility, ISO/ICAO country names
 │   ├── mrz-wasm/      wasm-bindgen wrapper for the browser demo
+│   ├── synthpass-gen/      Synthetic passport factory: seeded identities, TD3 MRZ, layout/
+│   │                  render/labels, capture-degradation profiles (see generation section above)
 │   ├── synthpass-core/     Canonical Extraction schema + Tier-3 audit/crypto helpers
 │   ├── synthpass-llm/      In-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`, ChatML
 │   │                  prompting, JSON repair, model integrity check
@@ -288,19 +313,38 @@ image, if you'd rather run it in a container than as a raw binary.
 │   │                  (`vendor` feature; keygen + issue-license, never shipped to customers)
 │   ├── synthpass-pipeline/ OcrEngine trait (rust | native) → Tier 1 MRZ → Tier 2
 │   │                  InferBackend (native) → JSON. Image-only, license-agnostic.
-│   ├── synthpass-cli/      CLI front-end (binary `synthpass`; also `decrypt`/`fingerprint`/`verify-license`)
+│   ├── synthpass-cli/      CLI front-end (binary `synthpass`; extract, `generate`, `decrypt`,
+│   │                  `fingerprint`, `verify-license`, `doctor`)
 │   └── synthpass-serve/    axum web app: upload page + POST /api/extract (SSE progress on Tier 2),
 │                      bearer auth + TLS + license enforcement
 ├── docker/           Optional container packaging: Dockerfile.serve + docker-compose.yml
 │                     for `synthpass-serve` — not required for any functional code path
 ├── web/              GitHub Pages demo site (static, client-side only)
 ├── samples/          Public-domain specimen documents + example outputs
-└── docs/             Architectural manifest, licensing walkthrough & roadmap
+└── docs/             Vision, roadmap, branding, architecture, licensing — see "More documentation"
 ```
 
 ## 🔒 Security (Tier 3)
 
 Everything runs on loopback by default. `synthpass-serve` **refuses a non-loopback bind unless `SYNTHPASS_TOKEN` is set**, then enforces `Authorization: Bearer <token>` on every request; set `SYNTHPASS_TLS_CERT`/`SYNTHPASS_TLS_KEY` for rustls TLS. Uploaded files and intermediate artifacts are deleted after each request. Two optional at-rest controls: `SYNTHPASS_AUDIT_LOG` appends a **PII-free** SHA-256 audit trail (fingerprint + method + timestamp, no names/numbers), and `SYNTHPASS_KEY` (base64 32-byte AES-256) encrypts the output JSON to `<input>.json.enc` — decrypt with `synthpass decrypt`. The native Tier-2 model itself is SHA-256-verified before use, so a tampered or substituted GGUF fails closed rather than running silently. As of **v0.9.0**, the highest-value in-memory PII carriers (the extracted fields, the AES key, the raw Tier-2 output) are wiped on drop (`zeroize`, best-effort — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7 for exactly what is and isn't covered), and the untrusted OCR ingest path is fuzz-tested — an always-on `proptest` suite plus opt-in `cargo-fuzz` coverage (`cargo fuzz run mrz_find_and_parse` / `mrz_parse_td` from `fuzz/`). Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## 📄 More documentation
+
+Full index: [docs/README.md](docs/README.md). Highlights:
+
+| Doc | What it covers |
+| --- | --- |
+| [docs/VISION.md](docs/VISION.md) | Dual mission (technical sovereignty + compliance-by-design), long-term direction |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | M1–M6 milestones, Definition of Done per phase, what's shipped vs. planned |
+| [docs/BRANDING.md](docs/BRANDING.md) | The Identra/SynthPass naming model, messaging guardrails, commercial tiers |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engineering rationale, trade-offs, and version-by-version design history |
+| [docs/LICENSING.md](docs/LICENSING.md) | Full customer/vendor CLI walkthrough for the offline licensing flow |
+| [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md) | Per-country OCR corpus status and how to add a specimen |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build/test setup (native + Docker), fuzzing, git workflow, PR checklist |
+| [SECURITY.md](SECURITY.md) | Threat model, deployment checklist, vulnerability reporting |
+| [CHANGELOG.md](CHANGELOG.md) | Full version-by-version history |
+
+Questions or bugs: [open an issue](https://github.com/ruledicaprio/SynthPass/issues).
 
 ## 🙏 Acknowledgments
 
