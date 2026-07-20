@@ -66,10 +66,23 @@ jobs:
       - name: Test mlis-license vendor (signing/keygen) feature
         run: cargo test -p mlis-license --features vendor
 
+      # These two steps are *smoke* tests — they assert the OCR stage runs and
+      # the pipeline reaches a terminal result, never Tier-1 MRZ accuracy. On
+      # CI's slow debug-mode rten inference, the full retry loop (up to 6
+      # preprocess variants per document, several of them triggered by the
+      # PNG/WebP re-encodes in the format test that miss Tier-1) dominated the
+      # job at ~24 min. Capping to the single general pass (MLIS_OCR_MAX_PASSES=1)
+      # removes that cost with no coverage loss: the retry/preprocess paths are
+      # exercised by the fast `preprocess` unit tests in `cargo test --workspace`
+      # above, not by these smoke tests.
       - name: Native OCR e2e test (real ocrs/rten models)
+        env:
+          MLIS_OCR_MAX_PASSES: "1"
         run: cargo test -p mlis-ocr --test native_ocr_e2e -- --ignored
 
       - name: Native-rust OCR pipeline smoke test (real ocrs/rten models)
+        env:
+          MLIS_OCR_MAX_PASSES: "1"
         run: cargo test -p mlis-pipeline --test rust_ocr_smoke -- --ignored
 
       - name: Check the OCR backend feature builds alone
