@@ -8,11 +8,13 @@ Python, no Docker required for any functional path as of v0.7.5) plus a WASM bro
 ```
 crates/mrz          zero-dep ICAO 9303 engine (TD1/TD2/TD3, checksum-verified OCR repair)
 crates/mrz-wasm     wasm-bindgen wrapper for the GitHub Pages demo
+crates/synthpass-gen     synthetic passport factory: seeded identities, TD3 MRZ, layout/render/
+                    labels, capture-degradation profiles (M1-M3 of docs/ROADMAP.md)
 crates/synthpass-core    canonical Extraction schema + Tier-3 audit/crypto (feature `security`)
 crates/synthpass-llm     in-process Tier-2 inference: Qwen GGUF via `llama-cpp-2`
 crates/synthpass-ocr     in-process pure-Rust OCR: `ocrs`/`rten`
 crates/synthpass-pipeline  OcrEngine trait → Tier 1 MRZ → Tier 2 InferBackend → JSON
-crates/synthpass-cli     CLI (binary `synthpass`, + `synthpass decrypt`)
+crates/synthpass-cli     CLI (binary `synthpass`; extract, `generate`, `decrypt`, `doctor`, ...)
 crates/synthpass-serve   axum web app (auth, TLS)
 ```
 
