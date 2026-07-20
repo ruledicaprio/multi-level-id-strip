@@ -91,8 +91,8 @@ git push -u origin <topic>-branch
 gh pr create
 ```
 
-The PR must show 2 green required checks before the merge button unlocks: `Rust (Linux, incl.
-native OCR)` and `Rust (macos-latest, default members)`. (Earlier releases also required a Python
+The PR must show 2 green required checks before the merge button unlocks: `Rust (Linux)`
+and `Rust (macos-latest, default members)`. (Earlier releases also required a Python
 gRPC smoke test and a cross-language bridge test; both were removed as required checks in v0.7.5
 along with the gRPC backend and its Python sidecar — see CHANGELOG.md.) No review approval is
 required (solo maintainer), but a PR and passing CI always are.

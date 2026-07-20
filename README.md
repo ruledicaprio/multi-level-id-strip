@@ -19,37 +19,18 @@
 ![Cloud calls](https://img.shields.io/badge/cloud%20calls-0-brightgreen?style=flat)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists — which also catches other unstructured scans, though there's no dedicated extraction schema for them yet. Both stages run **in-process**: OCR via [`mlis-ocr`](crates/mlis-ocr/) (`ocrs`/`rten`, pure Rust) and Tier 2 via [`mlis-llm`](crates/mlis-llm/) (`llama-cpp-2`) — no Python, no gRPC sidecar, and no Docker container required, on Windows/macOS/Linux alike. Image-only (JPEG/PNG/WebP/TIFF/BMP/GIF); extraction requires an offline Ed25519-signed license (see [Licensing](#-licensing-v080) below) — the mechanism for selling and metering this without ever phoning home. As of **v1.0.0**, `mlis`/`mlis-serve` also build as a single, statically-linked `x86_64-unknown-linux-musl` binary with OCR models baked in — see [Static musl release](#-static-musl-release-v100) below. Use it from the CLI, a self-hostable axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — no PII ever leaves your machine. Full version-by-version history lives in [CHANGELOG.md](CHANGELOG.md); architecture rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Air-gapped document extraction: passports and ID cards in — structured JSON out, with **zero cloud calls**. A shared Rust pipeline OCRs the input, validates identity documents **deterministically via ICAO 9303 MRZ check digits** (Tier 1), and only falls back to a quantized Qwen 2.5 GGUF model (Tier 2) when no valid MRZ exists. Full version-by-version history lives in [CHANGELOG.md](CHANGELOG.md); architecture rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## 🔀 Pipeline
+## ✨ Features
 
-```mermaid
-flowchart LR
-    subgraph entry["Entry points"]
-        A["📷 Image"]
-        A2["🌐 Browser demo"]
-    end
-
-    A --> B{"mlis-cli<br/>or mlis-serve"}
-    B --> P["⚙️ mlis-pipeline<br/>process_document()"]
-
-    P -->|"OcrEngine trait"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust"]
-    RUSTOCR -->|Markdown| P
-
-    P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
-    T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
-
-    T1 -->|"no — fallback"| T2["🧠 Tier 2<br/>InferBackend trait"]
-    T2 --> NAT["mlis-llm crate<br/>in-process llama.cpp<br/>Qwen 2.5 GGUF · CPU"]
-    NAT --> J2["strict JSON"]
-    J2 --> OUT
-
-    B -.->|"live SSE progress<br/>(mlis-serve only)"| T2
-
-    A2 -->|"tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>no server at all"]
-```
-
-Both stages are deliberately pluggable, even though each has one backend as of v0.7.5 — the trait boundary (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs), [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)) is what let v0.6.0/v0.7.0 swap defaults from a Python/Docker sidecar to in-process inference with minimal blast radius, and it's the seam the pipeline's own tests mock against. The legacy gRPC Tier-2 backend and the Docker-based `docling-serve` OCR engine (the only one that parsed PDF) were deleted outright in v0.7.5, and the Tesseract-based `ocr-daemon` accuracy fallback followed in v1.2.0 once the pure-Rust engine measured 100% on the Tier-1 corpus — mlis is genuinely Docker/Python/C-library-free and image-only. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- **Zero cloud calls.** OCR and LLM inference both run in-process on your machine — no PII ever leaves it, in the CLI, the web app, or the browser demo.
+- **Deterministic first (Tier 1).** ICAO 9303 MRZ check digits (7-3-1 weighting) mathematically prove a faithful read for any document with a machine-readable zone — no model, no hallucination risk, and it's tried before the LLM on every document.
+- **LLM fallback (Tier 2), only when needed.** When no valid MRZ exists, a quantized Qwen 2.5 1.5B model (in-process, CPU-only) fills the same extraction schema — see the [accuracy caveats](#-in-process-llm-fallback-tier-2-v060) stated plainly, not oversold.
+- **No Docker, no Python, no sidecars.** OCR ([`mlis-ocr`](crates/mlis-ocr/), pure-Rust `ocrs`/`rten`) and Tier-2 inference ([`mlis-llm`](crates/mlis-llm/), `llama-cpp-2`) both run inside the same binary, unchanged on Windows/macOS/Linux.
+- **Image formats:** JPEG, PNG, WebP, TIFF, BMP, GIF. (PDF and HEIC/HEIF aren't supported — see [why](docs/ARCHITECTURE.md#8-known-limitations--what-tier-2-accuracy-actually-looks-like).)
+- **Offline, Ed25519-signed licensing.** Extraction is meterable and sellable without the binary ever phoning home — see [Licensing](#-licensing-v080).
+- **Single static binary (v1.0.0).** `mlis`/`mlis-serve` also build as one statically-linked `x86_64-unknown-linux-musl` file with the OCR models baked in — see [Static musl release](#-static-musl-release-v100).
+- **Three ways to run it:** the CLI, a self-hostable Axum web app, or the [**browser-only MRZ demo**](https://ruledicaprio.github.io/multi-level-id-strip/) — Rust compiled to WebAssembly with a self-hosted, zero-CDN OCR runtime, no server at all.
 
 ## 🖼️ Example
 
@@ -79,13 +60,57 @@ A public-domain Croatian passport specimen (from [`samples/`](samples/)) → det
 
 > `in_date: false` — the specimen expired in 2014 (the live output also carries an exact `days_until_expiry`). A valid composite check digit proves a faithful **read** of the printed zone; whether the document is *in date* is a separate, non-cryptographic judgement.
 
+**[Try the live demo →](https://ruledicaprio.github.io/multi-level-id-strip/)** The same Rust code compiled to WebAssembly, with a self-hosted (zero-CDN) tesseract.js OCR runtime, on a static GitHub Pages site. **No data is persistent on any server — there is no server.** Images are downscaled and processed entirely inside your browser tab; the extracted JSON is shown for 10 seconds with a copy button, then wiped.
+
+## 📚 Contents
+
+- [Pipeline](#-pipeline)
+- [Deterministic MRZ validation (Tier 1)](#-deterministic-mrz-validation-tier-1)
+- [In-process LLM fallback (Tier 2)](#-in-process-llm-fallback-tier-2-v060)
+- [Quickstart](#-quickstart)
+- [Configuration](#-configuration)
+- [Licensing](#-licensing-v080)
+- [Static musl release](#-static-musl-release-v100)
+- [Repository Layout](#-repository-layout)
+- [Security](#-security-tier-3)
+- [Acknowledgments](#-acknowledgments)
+- [License](#-license)
+
+## 🔀 Pipeline
+
+```mermaid
+flowchart LR
+    subgraph entry["Entry points"]
+        A["📷 Image"]
+        A2["🌐 Browser demo"]
+    end
+
+    A --> B{"mlis-cli<br/>or mlis-serve"}
+    B --> P["⚙️ mlis-pipeline<br/>process_document()"]
+
+    P -->|"OcrEngine trait"| RUSTOCR["mlis-ocr crate<br/>in-process ocrs/rten<br/>pure Rust"]
+    RUSTOCR -->|Markdown| P
+
+    P --> T1{"🔐 Tier 1<br/>ICAO 9303 checksum<br/>valid?"}
+    T1 -->|"yes — deterministic,<br/>Tier 2 skipped"| OUT["📦 .md + .json"]
+
+    T1 -->|"no — fallback"| T2["🧠 Tier 2<br/>InferBackend trait"]
+    T2 --> NAT["mlis-llm crate<br/>in-process llama.cpp<br/>Qwen 2.5 GGUF · CPU"]
+    NAT --> J2["strict JSON"]
+    J2 --> OUT
+
+    B -.->|"live SSE progress<br/>(mlis-serve only)"| T2
+
+    A2 -->|"self-hosted tesseract.js OCR +<br/>mrz crate as WASM"| PAGES["GitHub Pages<br/>zero CDN, no server at all"]
+```
+
+Both stages are deliberately pluggable, even though each has one backend as of v0.7.5 — the trait boundary (see [`InferBackend`](crates/mlis-pipeline/src/infer.rs), [`OcrEngine`](crates/mlis-pipeline/src/ocr.rs)) is what let v0.6.0/v0.7.0 swap defaults from a Python/Docker sidecar to in-process inference with minimal blast radius, and it's the seam the pipeline's own tests mock against. The legacy gRPC Tier-2 backend and the Docker-based `docling-serve` OCR engine (the only one that parsed PDF) were deleted outright in v0.7.5, and the Tesseract-based `ocr-daemon` accuracy fallback followed in v1.2.0 once the pure-Rust engine measured 100% on the Tier-1 corpus — mlis is genuinely Docker/Python/C-library-free and image-only. Full rationale in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## 🔐 Deterministic MRZ validation (Tier 1)
 
 The [`mrz`](crates/mrz/) crate is a zero-dependency ICAO 9303 parser: TD1/TD2/TD3, every check digit verified (7-3-1 weighting), with **checksum-verified OCR repair** — common misreads (`B`↔`8`, `O`↔`0`, filler runs read as `K`/`L`, dropped or hallucinated characters) are corrected by generating candidate readings and letting the composite check digit prove which one matches the printed zone. A valid composite is mathematical proof of a faithful read; a failed one flags a bad scan or a tampered document. When Tier 1 validates, the LLM never runs: extraction is instant, deterministic and hallucination-free.
 
 > **Date validity ≠ authenticity.** A valid MRZ checksum and self-consistent dates prove the extraction faithfully matches what's printed on the document — not that the document itself is genuine or unaltered. This is an OCR/data-integrity tool, not a forgery-detection tool.
-
-**[Try the live demo →](https://ruledicaprio.github.io/multi-level-id-strip/)** The same Rust code compiled to WebAssembly, with tesseract.js OCR, on a static GitHub Pages site. **No data is persistent on any server — there is no server.** Images are downscaled and processed entirely inside your browser tab; the extracted JSON is shown for 10 seconds with a copy button, then wiped.
 
 ## 🧠 In-process LLM fallback (Tier 2, v0.6.0)
 
@@ -123,39 +148,7 @@ cargo run -p mlis-serve
 curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
-## 🔑 Licensing (v0.8.0)
-
-Extraction (`mlis <file>` and `mlis-serve`'s `/api/extract`) requires an offline, Ed25519-signed
-license — set once and checked with no network call. `mlis doctor`, `mlis decrypt`, `mlis
-fingerprint`, and `mlis verify-license` all keep working without one (you need `fingerprint` to
-get one in the first place). For local development, skip enforcement entirely:
-```powershell
-$env:MLIS_LICENSE_SKIP = "1"
-```
-
-**Customer flow:**
-```powershell
-cargo run -p mlis-cli -- fingerprint                    # send this string to your vendor
-# ...vendor emails back license.mlis...
-cargo run -p mlis-cli -- verify-license license.mlis     # confirm it before relying on it
-```
-
-**Vendor flow** (the `mlis-license-issuer` binary — `vendor` feature, never shipped to customers):
-```powershell
-cargo run -p mlis-license --features vendor --bin mlis-license-issuer -- keygen
-# keep the private key offline; embed the printed public key in crates/mlis-license/pubkey.b64
-
-$env:MLIS_LICENSE_PRIVKEY = "<private key from keygen>"
-cargo run -p mlis-license --features vendor --bin mlis-license-issuer -- `
-  issue-license --customer "Acme Hospital" --tier enterprise --expires-in-days 365 `
-  --hw <fingerprint from the customer> --out license.mlis
-```
-
-An empty `--hw` issues an unbound (site/trial) license instead of a machine-locked one. Full
-design — signed-bytes format, `verify_strict`, fingerprint scheme, and the threat model stated
-plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080).
-
-### Configuration (environment)
+## ⚙️ Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -179,6 +172,18 @@ plainly — in [docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptog
 > **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows.
 >
 > **OCR accuracy note (v1.1.0):** Tier-1 extraction hits **6/6 (100%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/mlis-ocr/examples/mrz_corpus.rs`](crates/mlis-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual.
+
+## 🔑 Licensing (v0.8.0)
+
+Extraction requires an offline, Ed25519-signed license — set once and checked with no network
+call. For local development, skip enforcement entirely:
+```powershell
+$env:MLIS_LICENSE_SKIP = "1"
+```
+Full customer (`fingerprint` → `verify-license`) and vendor (`keygen` → `issue-license`) CLI
+walkthroughs live in **[docs/LICENSING.md](docs/LICENSING.md)**. Design rationale — signed-bytes
+format, `verify_strict`, the fingerprint scheme, and the threat model stated plainly — is in
+[docs/ARCHITECTURE.md §6](docs/ARCHITECTURE.md#6-offline-cryptographic-licensing-v080).
 
 ## 📦 Static musl release (v1.0.0)
 
@@ -237,7 +242,7 @@ image, if you'd rather run it in a container than as a raw binary.
 │                     for `mlis-serve` — not required for any functional code path
 ├── web/              GitHub Pages demo site (static, client-side only)
 ├── samples/          Public-domain specimen documents + example outputs
-└── docs/             Architectural manifest & roadmap
+└── docs/             Architectural manifest, licensing walkthrough & roadmap
 ```
 
 ## 🔒 Security (Tier 3)
