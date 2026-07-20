@@ -22,9 +22,11 @@ to secure, license-audit, cross-compile, or explain to a procurement department.
 ### Changed
 - **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps
   (`native_ocr_e2e`, `rust_ocr_smoke`) assert only that OCR runs and the pipeline terminates, not
-  Tier-1 accuracy, yet on CI's slow debug-mode rten inference the full retry loop dominated the
-  job. They now run with `MLIS_OCR_MAX_PASSES=1` (general pass only); the retry/preprocess paths
-  stay covered by the fast `preprocess` unit tests in `cargo test --workspace`.
+  Tier-1 accuracy, yet debug-mode rten inference on CI's 2-core runner made a single general pass
+  ~5 min. Running them in `--release` collapses execution to seconds (the one-time release build
+  is cached by `rust-cache`); `MLIS_OCR_MAX_PASSES=1` additionally skips the retry loop these
+  smoke tests don't need. The retry/preprocess paths stay covered by the fast `preprocess` unit
+  tests in `cargo test --workspace`.
 - **The browser demo is now zero-CDN.** `web/fetch-vendor.sh` fetches and SHA-256-verifies the
   entire tesseract.js runtime (script, worker, both LSTM cores, `eng` traineddata — pinned to
   5.1.1) into `web/vendor/` at Pages deploy time, mirroring the `.rten` pin-and-verify pattern;
