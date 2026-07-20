@@ -4,6 +4,8 @@
 ![Rust](https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white)
 ![Tokio](https://img.shields.io/badge/Tokio-0B7261?style=flat&logo=rust&logoColor=white)
 ![Axum](https://img.shields.io/badge/Axum-000000?style=flat&logo=rust&logoColor=white)
+<!-- Coverage -->
+[![World coverage](https://img.shields.io/badge/world%20coverage-11%2F230%20countries-yellow?style=flat)](docs/CORPUS_COVERAGE.md)
 <!-- ML / inference -->
 ![llama.cpp](https://img.shields.io/badge/llama.cpp-in--process-555555?style=flat)
 ![Qwen 2.5](https://img.shields.io/badge/Qwen%202.5-1.5B%20q4__k__m-6236FF?style=flat)
@@ -222,7 +224,7 @@ the full build/test/cross-compile reference.
 
 > **Windows note:** the native Tier-2 backend needs CMake + LLVM/libclang + MSVC to build `llama-cpp-2`'s bundled `llama.cpp` (see `crates/mlis-llm`). The OCR engine (`mlis-ocr`, `ocrs`/`rten`) needs no native toolchain at all and works unchanged on Windows.
 >
-> **OCR accuracy note (v1.1.0):** Tier-1 extraction hits **6/6 (100%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/mlis-ocr/examples/mrz_corpus.rs`](crates/mlis-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual.
+> **OCR accuracy note:** Tier-1 extraction hits **17/18 (94%)** of the MRZ-bearing specimens in [`samples/`](samples/) (down to a 360×225 ID-card rear), with zero false positives on the no-MRZ control images — measured by the corpus harness at [`crates/mlis-ocr/examples/mrz_corpus.rs`](crates/mlis-ocr/examples/mrz_corpus.rs). When the general OCR pass can't produce a checksum-valid MRZ, targeted retry passes (MRZ-charset-constrained recognition over preprocessed crops) run automatically; the ICAO check digits decide which reading — if any — is trusted. When Tier 1 still misses, Tier 2 runs as usual. The one exception is a documented, permanent case: a physically redacted specimen whose MRZ data was never printed on the page (see [docs/CORPUS_COVERAGE.md](docs/CORPUS_COVERAGE.md)), not a recoverable OCR gap.
 
 ## 🔑 Licensing (v0.8.0)
 
