@@ -23,6 +23,23 @@ const CORPUS: &[(&str, &str)] = &[
     ("Passport_of_Serbia_ID_2009_version.jpg", "000000000"),
     ("SerbianID_back.png", "955555546"),
     ("Slovenian_ID_Card_2022_-_Rear.jpg", "IE9876543"),
+    // Known-MISS baseline (see Phase 0 of the multiscript-MRZ-robustness
+    // plan), NOT a real ground-truth doc number: this specimen is a
+    // publicly-posted "redacted sample" scan whose surname/given-name/
+    // passport-number/ID-number/date fields — and every MRZ character
+    // position — are physically blacked out with solid boxes on the source
+    // image, not merely OCR-garbled. No amount of OCR/preprocessing
+    // improvement can recover a checksum-valid MRZ from this file because
+    // the ICAO check-digit data was never printed on the visible page in
+    // the first place. It stays in the corpus as a stress test for the
+    // pass-budget/graceful-degradation behavior (Phase 1) and as a
+    // Hebrew-dense photographic-scan case for the row-density band
+    // isolation — not for the hit-rate, which cannot reach 100% while this
+    // entry is present. The placeholder value below can never match.
+    (
+        "Israel_Biometric_Passport.jpg",
+        "REDACTED-NO-GROUND-TRUTH-MRZ",
+    ),
 ];
 
 /// Samples with no MRZ at all: the retry passes run in full (worst-case

@@ -9,7 +9,24 @@ All notable changes to this project are documented here. The format is based on
 Roadmap: docs/ARCHITECTURE.md §10. Every dependency shed is surface the project no longer has
 to secure, license-audit, cross-compile, or explain to a procurement department.
 
+### Added
+- **Dense/bilingual-scan MRZ robustness in `mlis-ocr`.** Row-density MRZ-band isolation
+  (`preprocess::mrz_band`) locks onto the monospace OCR-B block so a blind bottom-band crop no
+  longer drags non-Latin visual-zone text (e.g. Hebrew) into the MRZ-constrained retry passes;
+  plus glare-tolerant local-threshold and pure-Rust deskew preprocess variants. Band isolation is
+  **additive and trailing** — the proven blind-crop passes still run first, so no previously
+  passing specimen regresses. A `MLIS_OCR_MAX_PASSES` / `MLIS_OCR_MAX_SECONDS` budget (defaults
+  7 passes / 45s) bounds the retry loop so a hopeless scan degrades gracefully instead of burning
+  minutes, and `MLIS_OCR_VERBOSE=1` logs per-pass timing/region counts. Zero new dependencies.
+
 ### Changed
+- **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps
+  (`native_ocr_e2e`, `rust_ocr_smoke`) assert only that OCR runs and the pipeline terminates, not
+  Tier-1 accuracy, yet debug-mode rten inference on CI's 2-core runner made a single general pass
+  ~5 min. Running them in `--release` collapses execution to seconds (the one-time release build
+  is cached by `rust-cache`); `MLIS_OCR_MAX_PASSES=1` additionally skips the retry loop these
+  smoke tests don't need. The retry/preprocess paths stay covered by the fast `preprocess` unit
+  tests in `cargo test --workspace`.
 - **The browser demo is now zero-CDN.** `web/fetch-vendor.sh` fetches and SHA-256-verifies the
   entire tesseract.js runtime (script, worker, both LSTM cores, `eng` traineddata — pinned to
   5.1.1) into `web/vendor/` at Pages deploy time, mirroring the `.rten` pin-and-verify pattern;
