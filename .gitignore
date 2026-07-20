@@ -22,3 +22,8 @@ fuzz/artifacts/
 fuzz/Cargo.lock
 
 web/pkg/
+
+# Demo OCR runtime — fetched + SHA-256-verified at deploy time by
+# web/fetch-vendor.sh, never committed (mirrors the .rten model pattern)
+web/vendor/
+web/tessdata/eng.traineddata.gz

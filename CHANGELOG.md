@@ -9,6 +9,13 @@ All notable changes to this project are documented here. The format is based on
 Roadmap: docs/ARCHITECTURE.md §10. Every dependency shed is surface the project no longer has
 to secure, license-audit, cross-compile, or explain to a procurement department.
 
+### Changed
+- **The browser demo is now zero-CDN.** `web/fetch-vendor.sh` fetches and SHA-256-verifies the
+  entire tesseract.js runtime (script, worker, both LSTM cores, `eng` traineddata — pinned to
+  5.1.1) into `web/vendor/` at Pages deploy time, mirroring the `.rten` pin-and-verify pattern;
+  nothing is committed to git and the deployed pages make no third-party requests at all. The
+  Linux CI job also drops the now-stale "incl. native OCR" from its name.
+
 ### Removed
 - **`ocr-daemon` (Tesseract + Leptonica) and the `native-ocr` feature.** The Linux/WSL-only
   accuracy fallback's justification — parity doubt about the then-new `ocrs` engine — was closed

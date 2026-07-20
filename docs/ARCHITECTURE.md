@@ -177,10 +177,11 @@ list is a product feature, not housekeeping. Scope, in order:
    pure-Rust engine's measured 100% Tier-1 corpus hit rate (v1.1.0, [§8](#8-known-limitations--what-tier-2-accuracy-actually-looks-like))
    closed the accuracy-parity question that justified the fallback. Removes the last C-library
    OCR chain, the `native-ocr` feature, and the Tesseract packages from CI and the builder image.
-2. **Self-host the browser demo's OCR assets.** The demo pages currently load tesseract.js from
-   the jsDelivr CDN; vendoring the script, worker, LSTM cores, and `eng` traineddata (fetched +
-   SHA-256-pinned at Pages deploy time, mirroring the `.rten` pattern — not committed to git)
-   makes "nothing leaves the device" true of the page itself, not just guest data.
+2. **Self-host the browser demo's OCR assets — done in this milestone's second PR.** The demo
+   pages used to load tesseract.js from the jsDelivr CDN; `web/fetch-vendor.sh` now vendors the
+   script, worker, LSTM cores, and `eng` traineddata (fetched + SHA-256-pinned at Pages deploy
+   time, mirroring the `.rten` pattern — not committed to git), so the deployed page makes zero
+   CDN requests and "nothing leaves the device" is true of the page itself, not just guest data.
 3. **Spike: `ocrs`/`rten` compiled to WASM in the browser.** The end state is *one* OCR engine
    everywhere — the exact `mlis-ocr` preprocessing and retry passes running client-side, deleting
    tesseract.js entirely and the JS port of the preprocessing with it. Gated on measured

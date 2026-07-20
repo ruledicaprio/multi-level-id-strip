@@ -34,6 +34,13 @@ jobs:
       - name: Build WASM package
         run: wasm-pack build crates/mrz-wasm --target web --release --no-typescript
 
+      # The demo's OCR runtime (tesseract.js + cores + eng traineddata) is
+      # fetched and SHA-256-verified at deploy time, never committed — the
+      # same pin-and-verify pattern the native pipeline uses for its .rten
+      # models. The deployed site then makes zero CDN requests.
+      - name: Fetch vendored OCR runtime
+        run: bash web/fetch-vendor.sh
+
       - name: Assemble site
         run: |
           mkdir -p _site/pkg
