@@ -19,11 +19,13 @@
 pub use mrz;
 
 mod infer;
+pub mod jobs;
 pub mod metrics;
 mod ocr;
 pub use infer::InferBackend;
 #[cfg(feature = "inferer-native")]
 pub use infer::NativeInferer;
+pub use jobs::{DocumentEntry, DocumentStatus, JobHandle, JobId, JobStatus};
 pub use metrics::{MetricsSnapshot, PipelineMetrics};
 pub use ocr::OcrEngine;
 #[cfg(feature = "ocr-native-rust")]
@@ -40,12 +42,17 @@ use synthpass_core::Extraction;
 use tokio::sync::{mpsc, Semaphore};
 use zeroize::Zeroizing;
 
+#[derive(Clone)]
 pub struct Pipeline {
     /// The OCR engine (pure-Rust `ocrs`/`rten` — the only engine since
-    /// v1.2.0).
-    ocr: Box<dyn OcrEngine>,
-    /// Tier-2 inference backend (native llama.cpp, in-process).
-    infer: Box<dyn InferBackend>,
+    /// v1.2.0). `Arc`, not `Box`: [`Pipeline`] must be cheaply cloneable so
+    /// [`submit`](Pipeline::submit) can hand an owned, `'static` copy to the
+    /// background task it spawns per batch job — the same reason every other
+    /// field here is already `Arc`-wrapped.
+    ocr: Arc<dyn OcrEngine>,
+    /// Tier-2 inference backend (native llama.cpp, in-process). `Arc` for the
+    /// same reason as `ocr` above.
+    infer: Arc<dyn InferBackend>,
     /// Tier 3: when set, append a PII-free audit record per processed document.
     audit_log: Option<PathBuf>,
     /// Tier 3: when set, encrypt the output JSON (AES-256-GCM) to `.json.enc`.
@@ -59,8 +66,27 @@ pub struct Pipeline {
     /// count is configurable via `SYNTHPASS_LLM_CONTEXTS` (see [`from_env`])
     /// for hardware with room for more than one loaded context.
     ///
+    /// **Lock ordering with [`ocr_semaphore`](Self::ocr_semaphore):** a
+    /// single document's processing acquires (and fully releases) at most
+    /// one of these two semaphores at a time — `ocr_and_tier1` acquires and
+    /// drops `ocr_semaphore` entirely before `extract_via_inferer[_stream]`
+    /// ever attempts to acquire this one. No code path holds both permits
+    /// simultaneously, so the two semaphores can never form a cyclic wait
+    /// (the necessary condition for deadlock) between themselves, no matter
+    /// how many documents a batch job runs concurrently against them.
+    ///
     /// [`from_env`]: Pipeline::from_env
     llm_semaphore: Arc<Semaphore>,
+    /// Bounds how many OCR passes ([`ocr_and_tier1`](Self::ocr_and_tier1))
+    /// run concurrently, independently of `llm_semaphore` above. OCR is
+    /// stateless, pure-CPU work with no shared model context to serialize
+    /// (unlike Tier-2's single loaded `llama.cpp` context) — the only reason
+    /// to bound it at all is to avoid oversubscribing the host's cores when a
+    /// batch job ([`jobs`]) fires many documents at once. Permit count is
+    /// `SYNTHPASS_OCR_THREADS` (see [`env_ocr_threads`]), default `cores - 1`
+    /// floored at 1. See `llm_semaphore`'s doc for why this can't deadlock
+    /// against it.
+    ocr_semaphore: Arc<Semaphore>,
     /// Requests currently queued or in flight against the inferer. Lets a
     /// caller (e.g. `synthpass-serve`) reject new work fast under overload instead
     /// of accepting it unboundedly and blocking. Incremented just before
@@ -70,6 +96,13 @@ pub struct Pipeline {
     /// and durations only — never field content; see [`metrics`] on the PII
     /// rule.
     metrics: Arc<PipelineMetrics>,
+    /// Batch-job bookkeeping (submission, status, bounded completed-job
+    /// retention) — see [`jobs`] and [`Pipeline::submit`]. Shared (not
+    /// re-created) across every `Clone` of this `Pipeline`, so a job
+    /// submitted through one clone (e.g. inside the background task
+    /// `submit` spawns) is still visible to `Pipeline::job` lookups made
+    /// through any other clone (e.g. `synthpass-serve`'s `AppState`).
+    jobs: Arc<jobs::JobRegistry>,
 }
 
 /// Bumps `llm_queue_depth` for the lifetime of the guard — from just before
@@ -135,6 +168,43 @@ fn parse_llm_contexts(raw: Option<&str>) -> usize {
 /// question — see [`Pipeline::from_env_with_llm_contexts`].
 pub fn env_llm_contexts() -> usize {
     parse_llm_contexts(std::env::var("SYNTHPASS_LLM_CONTEXTS").ok().as_deref())
+}
+
+/// Parses `SYNTHPASS_OCR_THREADS`'s raw value into an OCR-stage concurrency
+/// cap. Same fallback-on-garbage / floor-to-one discipline as
+/// [`parse_llm_contexts`]: unset, unparsable, or non-positive all fall back
+/// to `default_threads` (itself already floored at 1 by the caller) rather
+/// than ever producing a 0-permit semaphore, which would deadlock every OCR
+/// call forever. Split out as a pure function for the same reason
+/// `parse_llm_contexts` is — unit-testable without mutating the process
+/// environment.
+fn parse_ocr_threads(raw: Option<&str>, default_threads: usize) -> usize {
+    raw.and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or_else(|| default_threads.max(1))
+}
+
+/// Default OCR concurrency when `SYNTHPASS_OCR_THREADS` is unset: one less
+/// than the host's available parallelism, floored at 1. OCR is pure CPU with
+/// no shared context to serialize (unlike Tier-2's single GGUF context), so
+/// using every core but one is the natural default — it lets a batch job
+/// saturate the machine for OCR while still leaving headroom for the async
+/// runtime, the OS, and (if concurrently active) a Tier-2 call's own
+/// `spawn_blocking` work.
+fn default_ocr_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1))
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// How many concurrent OCR passes the environment is *asking* for
+/// (`SYNTHPASS_OCR_THREADS`, default: available cores − 1, floored at 1).
+pub fn env_ocr_threads() -> usize {
+    parse_ocr_threads(
+        std::env::var("SYNTHPASS_OCR_THREADS").ok().as_deref(),
+        default_ocr_threads(),
+    )
 }
 
 /// Which extraction tier produced the final JSON.
@@ -219,14 +289,34 @@ impl Pipeline {
         infer: Box<dyn InferBackend>,
         contexts: usize,
     ) -> Self {
+        // Manual construction (and every existing test) gets a serial,
+        // single-threaded OCR stage by default — only `from_env` opts into
+        // the host-parallel default via `env_ocr_threads`, mirroring how
+        // `encrypt_key`/`audit_log` stay unset here too.
+        Self::with_llm_contexts_and_ocr_threads(ocr, infer, contexts, 1)
+    }
+
+    /// Like [`with_llm_contexts`](Self::with_llm_contexts), but with an
+    /// explicit OCR-concurrency permit count too — split out so
+    /// [`from_env_with_llm_contexts`](Self::from_env_with_llm_contexts) can
+    /// supply the real `SYNTHPASS_OCR_THREADS`-derived count without every
+    /// other caller (manual construction, unit tests) having to opt in.
+    fn with_llm_contexts_and_ocr_threads(
+        ocr: Box<dyn OcrEngine>,
+        infer: Box<dyn InferBackend>,
+        contexts: usize,
+        ocr_threads: usize,
+    ) -> Self {
         Self {
-            ocr,
-            infer,
+            ocr: Arc::from(ocr),
+            infer: Arc::from(infer),
             audit_log: None,
             encrypt_key: None,
             llm_semaphore: Arc::new(Semaphore::new(contexts.max(1))),
+            ocr_semaphore: Arc::new(Semaphore::new(ocr_threads.max(1))),
             llm_queue_depth: Arc::new(AtomicUsize::new(0)),
             metrics: Arc::new(PipelineMetrics::default()),
+            jobs: Arc::new(jobs::JobRegistry::new(jobs::DEFAULT_QUEUE_CAPACITY)),
         }
     }
 
@@ -270,8 +360,12 @@ impl Pipeline {
     /// pipeline stays unaware of licensing and the licensing stays unaware of
     /// semaphores. Pair with [`env_llm_contexts`] to learn what was asked for.
     pub fn from_env_with_llm_contexts(contexts: usize) -> Self {
-        let mut pipeline =
-            Self::with_llm_contexts(ocr::engine_from_env(), infer::backend_from_env(), contexts);
+        let mut pipeline = Self::with_llm_contexts_and_ocr_threads(
+            ocr::engine_from_env(),
+            infer::backend_from_env(),
+            contexts,
+            env_ocr_threads(),
+        );
         pipeline.audit_log = std::env::var("SYNTHPASS_AUDIT_LOG").ok().map(PathBuf::from);
         pipeline.encrypt_key = match std::env::var("SYNTHPASS_KEY") {
             Ok(s) => match synthpass_core::crypt::key_from_base64(&s) {
@@ -283,6 +377,7 @@ impl Pipeline {
             },
             Err(_) => None,
         };
+        pipeline.jobs = Arc::new(jobs::JobRegistry::new(jobs::queue_capacity_from_env()));
         pipeline
     }
 
@@ -318,6 +413,15 @@ impl Pipeline {
     #[cfg(test)]
     fn llm_available_permits(&self) -> usize {
         self.llm_semaphore.available_permits()
+    }
+
+    /// Same as [`llm_available_permits`](Self::llm_available_permits), but
+    /// for the OCR-stage semaphore (B2) — proves
+    /// [`with_llm_contexts_and_ocr_threads`](Self::with_llm_contexts_and_ocr_threads)
+    /// actually configured it.
+    #[cfg(test)]
+    fn ocr_available_permits(&self) -> usize {
+        self.ocr_semaphore.available_permits()
     }
 
     /// Tier 2: call the active inference backend and get back the canonical
@@ -378,6 +482,18 @@ impl Pipeline {
         // log stream both sit outside the trust boundary that the document
         // itself does not leave.
         let ocr_started = Instant::now();
+        // Bound OCR concurrency independently of Tier-2's `llm_semaphore`
+        // (B2, `SYNTHPASS_OCR_THREADS` / `env_ocr_threads`). The permit is
+        // acquired and (via `_ocr_permit`'s scope) fully released before
+        // this function returns — well before `extract_via_inferer[_stream]`
+        // is ever called for this same document — see `ocr_semaphore`'s
+        // field doc for why that ordering is what keeps the two semaphores
+        // from being able to deadlock each other.
+        let _ocr_permit = self
+            .ocr_semaphore
+            .acquire()
+            .await
+            .expect("ocr_semaphore is never closed");
         let markdown = match self.ocr.to_markdown(input).await {
             Ok(markdown) => markdown,
             Err(e) => {
@@ -919,6 +1035,88 @@ mod tests {
         assert_eq!(pipeline.llm_available_permits(), 1);
     }
 
+    // ── B2: independent OCR-stage semaphore ──
+
+    #[test]
+    fn parse_ocr_threads_falls_back_to_the_given_default_on_bad_input() {
+        assert_eq!(
+            parse_ocr_threads(None, 4),
+            4,
+            "unset falls back to the default"
+        );
+        assert_eq!(
+            parse_ocr_threads(Some("0"), 4),
+            4,
+            "zero would deadlock every OCR call"
+        );
+        assert_eq!(
+            parse_ocr_threads(Some("abc"), 4),
+            4,
+            "unparsable falls back"
+        );
+        assert_eq!(parse_ocr_threads(Some("-1"), 4), 4, "negative falls back");
+    }
+
+    #[test]
+    fn parse_ocr_threads_accepts_a_positive_count() {
+        assert_eq!(parse_ocr_threads(Some("6"), 4), 6);
+        assert_eq!(parse_ocr_threads(Some("1"), 4), 1);
+    }
+
+    #[test]
+    fn default_ocr_threads_is_never_zero() {
+        // Whatever this host's core count is, the default must never produce
+        // a 0-permit semaphore — even on a reported single-core host.
+        assert!(default_ocr_threads() >= 1);
+    }
+
+    #[test]
+    fn with_llm_contexts_and_ocr_threads_configures_both_semaphores_independently() {
+        let pipeline = Pipeline::with_llm_contexts_and_ocr_threads(
+            Box::new(NoopOcr),
+            Box::new(MockBackend),
+            2,
+            5,
+        );
+        assert_eq!(pipeline.llm_available_permits(), 2);
+        assert_eq!(pipeline.ocr_available_permits(), 5);
+    }
+
+    #[test]
+    fn with_llm_contexts_and_ocr_threads_floors_zero_ocr_threads_to_one() {
+        let pipeline = Pipeline::with_llm_contexts_and_ocr_threads(
+            Box::new(NoopOcr),
+            Box::new(MockBackend),
+            1,
+            0,
+        );
+        assert_eq!(pipeline.ocr_available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn ocr_and_llm_semaphores_do_not_hold_each_other_up() {
+        // A single-permit pipeline on both semaphores: if OCR and Tier-2
+        // ever needed to hold both permits at once for one document, this
+        // would deadlock. It doesn't, because `ocr_and_tier1` releases its
+        // permit (function return) before `extract_via_inferer` ever
+        // requests the other one — see the lock-ordering doc on
+        // `Pipeline::llm_semaphore`/`ocr_semaphore`.
+        let pipeline = Pipeline::with_llm_contexts_and_ocr_threads(
+            Box::new(NoopOcr),
+            Box::new(MockBackend),
+            1,
+            1,
+        );
+        let extraction = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pipeline.extract_via_inferer("P<UTO passport markdown"),
+        )
+        .await
+        .expect("must not deadlock")
+        .expect("inferer extract");
+        assert_eq!(extraction.extraction_method, "llm");
+    }
+
     // ── M1: ExtractionV2 through the full pipeline (OCR → tier → JSON) ──
 
     /// An `OcrEngine` that always returns the same fixed Markdown, so
@@ -955,6 +1153,12 @@ mod tests {
     }
 
     #[tokio::test]
+    // `ENV_LOCK` deliberately guards the whole test body (including its
+    // awaits) — it exists purely to serialize two tests that touch the
+    // process-global `SYNTHPASS_JSON_V1` env var, not to protect anything
+    // async runtimes contend on, so holding it across `.await` here is safe
+    // (no other task ever holds it while awaiting something this one needs).
+    #[allow(clippy::await_holding_lock)]
     async fn tier1_produces_proven_v2_extraction() {
         // Locks against the SYNTHPASS_JSON_V1 shim test below: this case asserts
         // the *default* on-disk shape is v2.
@@ -1041,6 +1245,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // See the matching `#[allow]` on `tier1_produces_proven_v2_extraction`.
+    #[allow(clippy::await_holding_lock)]
     async fn synthpass_json_v1_env_writes_legacy_shape_on_disk() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("SYNTHPASS_JSON_V1", "1");
