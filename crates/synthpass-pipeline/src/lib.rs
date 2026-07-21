@@ -123,6 +123,13 @@ fn parse_llm_contexts(raw: Option<&str>) -> usize {
         .unwrap_or(1)
 }
 
+/// How many concurrent Tier-2 contexts the environment is *asking* for
+/// (`SYNTHPASS_LLM_CONTEXTS`, default 1). Whether it gets them is a separate
+/// question — see [`Pipeline::from_env_with_llm_contexts`].
+pub fn env_llm_contexts() -> usize {
+    parse_llm_contexts(std::env::var("SYNTHPASS_LLM_CONTEXTS").ok().as_deref())
+}
+
 /// Which extraction tier produced the final JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -234,7 +241,20 @@ impl Pipeline {
     /// allowed (default 1); and Tier-3 `SYNTHPASS_AUDIT_LOG` / `SYNTHPASS_KEY`
     /// (base64 32-byte AES-256 key).
     pub fn from_env() -> Self {
-        let contexts = parse_llm_contexts(std::env::var("SYNTHPASS_LLM_CONTEXTS").ok().as_deref());
+        Self::from_env_with_llm_contexts(env_llm_contexts())
+    }
+
+    /// Like [`from_env`](Pipeline::from_env), but with the Tier-2 context
+    /// count supplied by the caller instead of read from
+    /// `SYNTHPASS_LLM_CONTEXTS` directly.
+    ///
+    /// This exists for `synthpass-serve`, where the environment only gets to
+    /// *ask*: an offline license can cap concurrent contexts
+    /// (`max_llm_contexts`) or withhold the `multi-context` feature outright,
+    /// and the caller resolves that before constructing the pipeline — so the
+    /// pipeline stays unaware of licensing and the licensing stays unaware of
+    /// semaphores. Pair with [`env_llm_contexts`] to learn what was asked for.
+    pub fn from_env_with_llm_contexts(contexts: usize) -> Self {
         let mut pipeline =
             Self::with_llm_contexts(ocr::engine_from_env(), infer::backend_from_env(), contexts);
         pipeline.audit_log = std::env::var("SYNTHPASS_AUDIT_LOG").ok().map(PathBuf::from);

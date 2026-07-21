@@ -27,8 +27,88 @@ pub mod sign;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
+use std::str::FromStr;
 
 pub use fingerprint::machine_fingerprint;
+
+/// Single-document extraction — the core capability. Named here for
+/// completeness (and so a preset can list it), but deliberately **never**
+/// gated in `synthpass-serve`: `docs/BRANDING.md` §5 draws the paid boundary
+/// at capacity, support, and enterprise-integration surfaces, never at the
+/// core.
+pub const FEATURE_EXTRACT: &str = "extract";
+/// Batch submission / job endpoints — a capacity surface.
+pub const FEATURE_BATCH: &str = "batch";
+/// More than one concurrent LLM context — a capacity surface.
+pub const FEATURE_MULTI_CONTEXT: &str = "multi-context";
+/// Prometheus `/metrics` — the "enhanced reporting" surface.
+pub const FEATURE_METRICS: &str = "metrics";
+
+/// The commercial tiers of `docs/BRANDING.md` §5, ordered so that a higher
+/// tier is a superset of a lower one.
+///
+/// The tier is *descriptive*: gating decisions are made per-feature by
+/// [`check_feature`], because a license's `features` list is what the issuer
+/// actually signed. `Tier` exists so the issuer can stamp a coherent preset
+/// ([`Tier::default_features`]) in one step and so startup logging can say
+/// something meaningful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    Trial,
+    Pro,
+    Enterprise,
+}
+
+impl Tier {
+    /// The feature set an issuer stamps for this tier. Mirrors the tier table
+    /// in `docs/BRANDING.md` §5: Professional adds capacity knobs, Enterprise
+    /// adds reporting on top.
+    pub fn default_features(self) -> Vec<String> {
+        let names: &[&str] = match self {
+            Self::Trial => &[FEATURE_EXTRACT],
+            Self::Pro => &[FEATURE_EXTRACT, FEATURE_BATCH, FEATURE_MULTI_CONTEXT],
+            Self::Enterprise => &[
+                FEATURE_EXTRACT,
+                FEATURE_BATCH,
+                FEATURE_MULTI_CONTEXT,
+                FEATURE_METRICS,
+            ],
+        };
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trial => "trial",
+            Self::Pro => "pro",
+            Self::Enterprise => "enterprise",
+        }
+    }
+}
+
+impl FromStr for Tier {
+    type Err = ();
+
+    /// Lenient by design: licenses in the wild carry a free-form `tier`
+    /// string, so parsing accepts the obvious spellings and is
+    /// case/whitespace-insensitive. An unrecognised tier is an `Err` rather
+    /// than a silent default — callers decide what to do with it, and none of
+    /// them grant access on the strength of the tier alone.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "trial" | "eval" | "evaluation" => Ok(Self::Trial),
+            "pro" | "professional" => Ok(Self::Pro),
+            "enterprise" => Ok(Self::Enterprise),
+            _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for Tier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// The terms of a license, signed as-is (see module docs on the byte-exact
 /// signing scheme).
@@ -42,7 +122,11 @@ pub struct LicensePayload {
     pub hw_fingerprint: String,
     pub issued_unix: u64,
     pub expires_unix: u64,
+    /// Free-form on the wire; parse with [`Tier`] when a structured view is
+    /// wanted. Descriptive only — [`check_feature`] gates on `features`.
     pub tier: String,
+    /// The gateable surfaces this license unlocks. **Empty means all of
+    /// them** — see [`check_feature`] on grandfathering.
     #[serde(default)]
     pub features: Vec<String>,
     /// A license can refuse to unlock a `synthpass` build older than it was
@@ -50,6 +134,11 @@ pub struct LicensePayload {
     /// present.
     #[serde(default)]
     pub mlis_min_version: Option<String>,
+    /// Optional cap on concurrent Tier-2 LLM contexts. The environment
+    /// *asks*, the license *permits* — see [`effective_llm_contexts`].
+    /// Absent ⇒ uncapped.
+    #[serde(default)]
+    pub max_llm_contexts: Option<usize>,
 }
 
 /// The on-disk license file format: `payload` is base64 of the *exact*
@@ -88,6 +177,12 @@ pub enum LicenseError {
     MinVersionUnmet {
         required: String,
     },
+    /// The license verified fine but doesn't name the feature backing the
+    /// surface being reached for. Fails closed and names the missing feature
+    /// so the operator knows exactly what to ask their vendor for.
+    FeatureNotLicensed {
+        feature: String,
+    },
 }
 
 impl fmt::Display for LicenseError {
@@ -109,6 +204,9 @@ impl fmt::Display for LicenseError {
                 "license requires synthpass >= {required} (running {})",
                 env!("CARGO_PKG_VERSION")
             ),
+            Self::FeatureNotLicensed { feature } => {
+                write!(f, "license does not include the '{feature}' feature")
+            }
         }
     }
 }
@@ -208,6 +306,49 @@ pub fn check(
     Ok(())
 }
 
+/// `true` when `payload` predates feature gating and is therefore
+/// grandfathered into every feature (design record §9, break B6).
+///
+/// Kept separate from [`check_feature`] so startup can log the fact **once**
+/// rather than silently waving every request through.
+pub fn features_grandfathered(payload: &LicensePayload) -> bool {
+    payload.features.is_empty()
+}
+
+/// Does this license unlock `feature`?
+///
+/// Fails closed with [`LicenseError::FeatureNotLicensed`] — with one
+/// deliberate exception: a payload with an **empty** `features` list is
+/// grandfathered into everything, because licenses issued before gating
+/// existed carry no list and must not stop working on upgrade. Those are
+/// flagged by [`features_grandfathered`] so the operator is told once.
+///
+/// Pure, like [`check`]: no clock, no environment, no I/O.
+pub fn check_feature(payload: &LicensePayload, feature: &str) -> Result<(), LicenseError> {
+    if features_grandfathered(payload) || payload.features.iter().any(|f| f == feature) {
+        return Ok(());
+    }
+    Err(LicenseError::FeatureNotLicensed {
+        feature: feature.to_string(),
+    })
+}
+
+/// Reconcile a *requested* Tier-2 context count with what the license
+/// permits: the environment asks, the license caps, and the effective value
+/// is the lesser of the two (floored at 1 — zero contexts would mean no
+/// Tier-2 at all, which is a misconfiguration, not a license tier).
+///
+/// Returns `(effective, capped)`; `capped` is `true` when the license
+/// actually lowered the request, so the caller can say so out loud instead of
+/// leaving an operator wondering why their env var did nothing.
+pub fn effective_llm_contexts(payload: &LicensePayload, requested: usize) -> (usize, bool) {
+    let requested = requested.max(1);
+    match payload.max_llm_contexts {
+        Some(cap) if cap.max(1) < requested => (cap.max(1), true),
+        _ => (requested, false),
+    }
+}
+
 /// `true` iff `actual` is >= `required`, both `major[.minor[.patch]]`
 /// (any missing component pads as `0`; a trailing `-pre`/`+build` suffix on
 /// either string is stripped before comparing). Fails closed — an
@@ -295,6 +436,7 @@ mod tests {
             tier: "enterprise".into(),
             features: vec!["extract".into()],
             mlis_min_version: None,
+            max_llm_contexts: None,
         }
     }
 
@@ -404,6 +546,156 @@ mod tests {
             !version_satisfies("1.0.0", "not-a-version"),
             "unparsable required fails closed"
         );
+    }
+
+    #[test]
+    fn listed_feature_is_allowed() {
+        let payload = sample_payload("", 4_000_000_000); // features: ["extract"]
+        check_feature(&payload, FEATURE_EXTRACT).expect("a listed feature is licensed");
+    }
+
+    #[test]
+    fn unlisted_feature_fails_closed_and_names_itself() {
+        let payload = sample_payload("", 4_000_000_000); // features: ["extract"] only
+        let err =
+            check_feature(&payload, FEATURE_BATCH).expect_err("an unlisted feature must fail");
+        assert!(matches!(
+            err,
+            LicenseError::FeatureNotLicensed { ref feature } if feature == FEATURE_BATCH
+        ));
+        assert!(
+            err.to_string().contains(FEATURE_BATCH),
+            "the operator must be told which feature is missing: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_feature_list_is_grandfathered_into_everything() {
+        // Break B6: licenses issued before gating existed carry no `features`
+        // list and must keep working across the upgrade.
+        let payload = LicensePayload {
+            features: vec![],
+            ..sample_payload("", 4_000_000_000)
+        };
+        assert!(features_grandfathered(&payload));
+        for feature in [
+            FEATURE_EXTRACT,
+            FEATURE_BATCH,
+            FEATURE_MULTI_CONTEXT,
+            FEATURE_METRICS,
+        ] {
+            check_feature(&payload, feature).expect("a feature-less license unlocks everything");
+        }
+    }
+
+    #[test]
+    fn a_populated_feature_list_is_not_grandfathered() {
+        let payload = sample_payload("", 4_000_000_000);
+        assert!(
+            !features_grandfathered(&payload),
+            "naming any feature opts the license into real gating"
+        );
+    }
+
+    #[test]
+    fn license_cap_lowers_the_requested_context_count() {
+        let payload = LicensePayload {
+            max_llm_contexts: Some(1),
+            ..sample_payload("", 4_000_000_000)
+        };
+        assert_eq!(
+            effective_llm_contexts(&payload, 4),
+            (1, true),
+            "the env asks for 4, the license permits 1"
+        );
+    }
+
+    #[test]
+    fn license_cap_never_raises_the_request() {
+        let payload = LicensePayload {
+            max_llm_contexts: Some(8),
+            ..sample_payload("", 4_000_000_000)
+        };
+        assert_eq!(
+            effective_llm_contexts(&payload, 2),
+            (2, false),
+            "a generous cap doesn't conjure contexts nobody asked for"
+        );
+    }
+
+    #[test]
+    fn absent_cap_leaves_the_request_alone() {
+        let payload = sample_payload("", 4_000_000_000); // max_llm_contexts: None
+        assert_eq!(effective_llm_contexts(&payload, 3), (3, false));
+    }
+
+    #[test]
+    fn context_count_is_floored_at_one() {
+        let zero_cap = LicensePayload {
+            max_llm_contexts: Some(0),
+            ..sample_payload("", 4_000_000_000)
+        };
+        // Zero contexts would mean no Tier 2 at all — a misconfiguration, not
+        // a tier. Both sides of the min() floor at 1.
+        assert_eq!(effective_llm_contexts(&zero_cap, 4), (1, true));
+        assert_eq!(
+            effective_llm_contexts(&sample_payload("", 4_000_000_000), 0),
+            (1, false)
+        );
+    }
+
+    #[test]
+    fn tier_parses_leniently_and_orders() {
+        assert_eq!(Tier::from_str("Trial "), Ok(Tier::Trial));
+        assert_eq!(Tier::from_str("PROFESSIONAL"), Ok(Tier::Pro));
+        assert_eq!(Tier::from_str("enterprise"), Ok(Tier::Enterprise));
+        assert_eq!(Tier::from_str("platinum"), Err(()));
+        assert!(Tier::Trial < Tier::Pro && Tier::Pro < Tier::Enterprise);
+    }
+
+    #[test]
+    fn tier_presets_are_supersets_going_up() {
+        let trial = Tier::Trial.default_features();
+        let pro = Tier::Pro.default_features();
+        let enterprise = Tier::Enterprise.default_features();
+
+        assert!(trial.iter().all(|f| pro.contains(f)), "pro ⊇ trial");
+        assert!(
+            pro.iter().all(|f| enterprise.contains(f)),
+            "enterprise ⊇ pro"
+        );
+        // The core capability is in every tier — BRANDING.md §5 draws the
+        // paid boundary at capacity and reporting, never at the core.
+        for tier in [Tier::Trial, Tier::Pro, Tier::Enterprise] {
+            assert!(tier
+                .default_features()
+                .contains(&FEATURE_EXTRACT.to_string()));
+        }
+        // ...and the capacity/reporting surfaces are genuinely withheld from
+        // the bottom tier, or the gate would be decorative.
+        assert!(!trial.contains(&FEATURE_BATCH.to_string()));
+        assert!(!pro.contains(&FEATURE_METRICS.to_string()));
+    }
+
+    #[test]
+    fn new_optional_fields_deserialize_from_a_pre_gating_payload() {
+        // A license issued before this change has neither `features` nor
+        // `max_llm_contexts` in its signed bytes. Since verification checks
+        // the *signature over those exact bytes* and only then deserializes,
+        // the new fields must default rather than fail to parse.
+        let json = r#"{
+            "license_id": "old-1",
+            "customer": "Legacy Customer",
+            "hw_fingerprint": "",
+            "issued_unix": 1700000000,
+            "expires_unix": 4000000000,
+            "tier": "enterprise"
+        }"#;
+        let payload: LicensePayload =
+            serde_json::from_str(json).expect("a pre-gating payload still parses");
+        assert!(payload.features.is_empty());
+        assert_eq!(payload.max_llm_contexts, None);
+        assert!(features_grandfathered(&payload));
     }
 
     #[test]

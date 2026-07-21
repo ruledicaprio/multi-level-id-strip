@@ -71,6 +71,7 @@ mod tests {
             tier: "enterprise".into(),
             features: vec![],
             mlis_min_version: None,
+            max_llm_contexts: None,
         };
         let signed = issue(&signing_key, &payload);
         let verified = verify_with_key(&signed, &verifying_key);

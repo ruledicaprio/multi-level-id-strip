@@ -53,6 +53,21 @@ extraction.
   `SYNTHPASS_LLM_CONTEXTS` instead of being hardcoded to a single in-flight LLM call. And the
   queue-full 503 now returns a `Retry-After: 5` header — the license-expired 503 deliberately
   does not, since retrying won't fix an expired license.
+- **License feature gating and capacity metering (M5, Atlas §7).** `synthpass-license` gained
+  `check_feature()` and a `LicenseError::FeatureNotLicensed` variant, so a license's `features`
+  list is finally *enforced* rather than parsed and ignored, plus a `Tier` enum (`trial` / `pro` /
+  `enterprise`) whose `default_features()` presets mirror the tier table in
+  [`docs/BRANDING.md`](docs/BRANDING.md) §5 — the paid boundary sits at capacity and reporting
+  (`batch`, `multi-context`, `metrics`), never at the core `extract` capability. A new optional
+  `max_llm_contexts` payload field caps concurrent Tier-2 contexts: the environment
+  (`SYNTHPASS_LLM_CONTEXTS`) asks, the license permits, and `synthpass-serve` runs the lesser of
+  the two — announcing at boot when it lowered the request, rather than ignoring an operator's
+  env var in silence. A license that doesn't name `multi-context` stays at one context regardless.
+  `synthpass-license-issuer` accordingly takes `--features` presets from `--tier` (so issuing a
+  real license is one command), plus `--max-llm-contexts`. **Backward compatible** (design record
+  §9, break B6): a license with an *empty* `features` list is grandfathered into every feature and
+  says so once at boot, and `SYNTHPASS_LICENSE_SKIP=1` remains a full opt-out — this meters the
+  official binary, it is not DRM. Zero new dependencies.
 - **Nightly bench-data-collection workflow.** A new scheduled CI job
   (`.github/workflows/bench-data-collection.yml`) runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on

@@ -101,11 +101,18 @@ flowchart LR
   `GET /health` endpoint, deliberately outside the auth middleware since health probes are
   typically unauthenticated (PR #35); the Tier-2 concurrency semaphore is now configurable via
   `SYNTHPASS_LLM_CONTEXTS` instead of hardcoded to 1 (PR #36); and the queue-full 503 now carries
-  a `Retry-After: 5` header, distinct from the (non-retriable) license-expired 503 (PR #37). The
-  remaining Atlas DoDs — OCR region detection by geometry, the bounded job queue / batch API
+  a `Retry-After: 5` header, distinct from the (non-retriable) license-expired 503 (PR #37).
+- **M5 licensing enforcement (Atlas §7) has landed.** `synthpass_license::check_feature` +
+  `LicenseError::FeatureNotLicensed` make the `features` list load-bearing, a `Tier` enum supplies
+  the `trial`/`pro`/`enterprise` presets from [`BRANDING.md`](BRANDING.md) §5, and a new
+  `max_llm_contexts` payload field meters Tier-2 concurrency (env asks, license permits, effective
+  = min, and `synthpass-serve` says so out loud when it lowers the request). Legacy licenses with
+  no `features` list are grandfathered into everything (break B6). The per-*endpoint* half of this
+  gate — 403ing a named surface — lands with the surfaces themselves: `metrics` with `/metrics`,
+  `batch` with the batch API, rather than as a middleware with nothing yet to guard.
+  The remaining Atlas DoDs — OCR region detection by geometry, the bounded job queue / batch API
   (`Pipeline::submit`/`JobHandle`, `POST /api/extract/batch`, `GET /api/jobs/{id}`), `tracing` +
-  `/metrics`, GBNF-constrained Tier-2 decoding, and per-endpoint license-tier gating — are still
-  not started.
+  `/metrics`, and GBNF-constrained Tier-2 decoding — are still not started.
 - **A nightly bench-data-collection workflow has also shipped** (PR #38,
   `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
   against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a

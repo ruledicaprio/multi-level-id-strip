@@ -51,6 +51,7 @@ fn sample_payload(hw_fingerprint: &str, expires_unix: u64) -> LicensePayload {
         tier: "enterprise".into(),
         features: vec![],
         mlis_min_version: None,
+        max_llm_contexts: None,
     }
 }
 
