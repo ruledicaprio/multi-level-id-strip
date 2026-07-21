@@ -307,8 +307,7 @@ impl NativeOcr {
             (rotation, image, lines, word_boxes, scored.map(|(b, _)| b))
         } else {
             let flipped = rotate_image(&image, 180);
-            let (f_lines, f_word_boxes) =
-                geometry_pass(&self.engine, &flipped).unwrap_or_default();
+            let (f_lines, f_word_boxes) = geometry_pass(&self.engine, &flipped).unwrap_or_default();
             let f_scored = geometry::detect_mrz_band_scored(&f_lines, MRZ_CHARSET);
             let flipped_score = f_scored.map_or(0.0, |(_, score)| score);
 
@@ -758,7 +757,10 @@ mod tests {
         );
 
         // A page with no band either way carries no evidence at all.
-        assert!(!should_flip_180(0.0, 0.0), "no band either way must not flip");
+        assert!(
+            !should_flip_180(0.0, 0.0),
+            "no band either way must not flip"
+        );
     }
 
     #[test]
