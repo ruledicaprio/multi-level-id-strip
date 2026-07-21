@@ -149,6 +149,39 @@ flowchart LR
   dedicated `bench-data` branch. This is data collection only, no tuning logic yet — it's a first
   step toward the "Future Work" section's fine-tuning loop and statistical dataset
   characterisation below, not a new M4/M5 deliverable in its own right.
+- **M6 scoping note — measure the page angle instead of searching for it.** Orientation handling
+  currently brute-forces the angle twice: `choose_rotation` runs a full OCR *detection pass* at
+  each of 0°/90°/180°/270° and keeps the best-scoring one, while `preprocess::deskew` separately
+  sweeps `DESKEW_CANDIDATES_DEG` for small tilts. Both search for a quantity `ocrs` already
+  reports — `detect_words` returns `RotatedRect`s carrying their own orientation, which
+  `geometry.rs` discards when it converts to an axis-aligned `BBox`.
+
+  Keeping that angle allows the dominant text angle to be *computed* in a single detection pass as
+  a width-weighted **circular mean**: accumulate `w·e^(i·2θ)` over the detected words and take
+  `½·arg(Σ)`. The doubling is the load-bearing part — a text line's orientation is mod π (179° and
+  1° describe the same line), and naively averaging those two gives 90°, the worst possible
+  answer. The resultant length `|Σ|/Σw ∈ [0,1]` falls out as a genuine confidence measure ("do the
+  words agree on an orientation at all?"), which is a better gate than today's fixed
+  beat-0°-by-a-margin margin. No new dependency: a complex sum is two `f64` accumulators and
+  `atan2`/`sin`/`cos` are `std`. This is deliberately *not* Fourier–Mellin or a log-polar
+  transform — those need a real FFT and buy nothing here.
+
+  Three caveats, all real:
+  - **It cannot resolve 0° vs 180°** (nor 90° vs 270°). Orientation mod π is intrinsic to the
+    mathematics, not a limitation of the estimator. The MRZ-band-at-the-bottom tie-break shipped in
+    M5 stays necessary — the angle gives you the *axis*, only content gives you the *direction*.
+  - Rotating by an arbitrary angle resamples and costs sharpness, whereas right-angle rotations are
+    lossless. Snap to the nearest right angle within tolerance; resample only for genuine tilt.
+  - It assumes `ocrs`'s per-word angle is meaningful for near-horizontal text; verify empirically
+    against the corpus before replacing the existing probe rather than adding alongside it.
+- **M6 scoping note — document classes are not interchangeable.** M6's `TD1 / TD2 / MRVA / MRVB`
+  line covers ID cards and residence permits (TD1, 3×30; TD2, 2×36) and visas (MRVA/MRVB), which
+  is the real generator gap: `synthpass-gen` emits **TD3 only** today, so every accuracy number in
+  this file is measured against synthetic passports and nothing else. **Driving licences are a
+  different mechanism, not a lower priority**: EU licences carry no MRZ at all, and US ones encode
+  their data in an AAMVA PDF417 barcode. No amount of MRZ work reads one. They belong to
+  `ExtractionV2.barcodes` — a declared slot with no decoder behind it — and should be scoped as a
+  barcode project, not folded into the MRZ roadmap where they would quietly fail forever.
 
 ## Future Work
 
