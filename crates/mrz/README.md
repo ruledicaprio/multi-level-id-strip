@@ -17,13 +17,13 @@ The core crate has **no runtime dependencies** and compiles to
 | Format | Document                          | Layout            | Status |
 | ------ | --------------------------------- | ----------------- | ------ |
 | TD3    | Passports                         | 2 lines × 44      | ✅ parse + emit |
-| TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse |
-| TD1    | ID cards                          | 3 lines × 30      | ✅ parse |
+| TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse + emit |
+| TD1    | ID cards                          | 3 lines × 30      | ✅ parse + emit |
 | MRV-A / MRV-B | Visas                      | —                 | ❌ not yet |
 
-Emission (`format_td3`) currently covers **TD3 only**. Machine Readable Visa
-(MRV-A / MRV-B) parsing and document-number overflow (numbers longer than the
-9-character field) are known gaps tracked for a later release.
+Machine Readable Visa (MRV-A / MRV-B) parsing and document-number overflow
+(numbers longer than the 9-character field) are known gaps tracked for a later
+release.
 
 ## Usage
 
