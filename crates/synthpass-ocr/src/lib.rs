@@ -231,16 +231,18 @@ impl NativeOcr {
     /// structured line/word geometry ([`geometry_pass`]) is best-effort: its
     /// own detect+recognize pass never feeds back into `text`, and a failure
     /// in it degrades `OcrPage`'s structured fields to empty rather than
-    /// failing this call. Its `mrz_band` output then feeds two more additive
-    /// steps: the 0°/180° tie-break ([`band_in_upper_third`]) that
+    /// failing this call. Its scored `mrz_band` output then feeds two more
+    /// additive steps: the 0°/180° tie-break ([`should_flip_180`]) that
     /// `choose_rotation` can't resolve on its own, and — down in the retry
     /// loop — `preprocess::geometry_band_variants`, chained strictly as
-    /// *trailing* extras after every existing `mrz_variants` entry. Both are
-    /// gated on a *confident* `mrz_band`; absent one, `image` stays whatever
-    /// `choose_rotation` produced and the variant list is exactly
-    /// `mrz_variants`'s own — the same as before this milestone, so an
-    /// already-passing upright specimen's `image`/`text` are byte-identical
-    /// to its pre-M5 behaviour. Everything through `choose_rotation` and the
+    /// *trailing* extras after every existing `mrz_variants` entry. The
+    /// variant chaining is gated on a `mrz_band` being found at all; absent
+    /// one, the variant list is exactly `mrz_variants`'s own. The tie-break
+    /// only ever *replaces* `image` when the flipped page scores strictly
+    /// better by a margin, so an already-passing upright specimen's
+    /// `image`/`text` stay byte-identical to their pre-M5 behaviour — and an
+    /// upright band scoring above `geometry::MRZ_BAND_CONFIDENT_SCORE` skips
+    /// the probe altogether. Everything through `choose_rotation` and the
     /// geometry passes runs *before* `overall_started` is set, so none of it
     /// eats into the retry loop's own wall-clock budget
     /// (`DEFAULT_MAX_SECONDS`) — it adds to this call's total latency, not
@@ -270,38 +272,63 @@ impl NativeOcr {
         // (see this method's doc comment on why this is a separate pass
         // rather than threaded through `run_pass`/`region_count` below).
         let (lines, word_boxes) = geometry_pass(&self.engine, &image).unwrap_or_default();
-        let mrz_band = geometry::detect_mrz_band(&lines, MRZ_CHARSET);
+        let scored = geometry::detect_mrz_band_scored(&lines, MRZ_CHARSET);
 
         // A3 continued — the 0°/180° tie-break `choose_rotation` cannot
         // resolve on its own (see its doc comment: an upside-down horizontal
         // line measures identically wide-and-short as a right-side-up one).
-        // The MRZ settles it: on every ICAO layout (TD1 rear, TD2, TD3 data
-        // page) it sits at the bottom of the page, so a `mrz_band` that
-        // cleared `detect_mrz_band`'s own confidence floor and still landed
-        // in the upper third is strong, specific evidence the page is still
-        // upside-down after `choose_rotation`'s pass. Only that combination
-        // — confident band *and* upper-third — triggers a flip; a `None`
-        // band (nothing to disambiguate with) or a confident band anywhere
-        // in the lower two-thirds (already consistent with upright) leaves
-        // `image`/`rotation`/`lines`/`word_boxes`/`mrz_band` untouched, which
-        // is what keeps this a pure addition rather than a second chance to
-        // guess wrong. The cost is one extra geometry pass, and only on
-        // documents meeting both conditions.
-        let (rotation, image, lines, word_boxes, mrz_band) = match mrz_band
-            .filter(|band| band_in_upper_third(*band, image.height()))
-        {
-            Some(_) => {
+        // Only *content* can settle direction, so the page is scored in both
+        // orientations and the better-scoring one wins.
+        //
+        // The obvious cheaper rule — "the MRZ sits at the bottom on every
+        // ICAO layout, so a confident band near the top means upside-down" —
+        // was tried first and does not work, for a reason worth recording:
+        // on a genuinely upside-down page the real MRZ is garbled, so it
+        // scores *low*, and some unrelated mid-page noise routinely wins
+        // `detect_mrz_band` instead. The band's location then describes the
+        // noise, not the MRZ. On the 180°-rotated Croatian specimen the
+        // winning band sat mid-page, the "upper third" test was false, and
+        // the flip never fired. Asking which orientation scores better sides
+        // steps that entirely: it never has to locate the MRZ on the page it
+        // cannot read.
+        //
+        // Two guards, both measured over the 42-image `samples/` corpus (see
+        // `geometry::MRZ_BAND_CONFIDENT_SCORE`):
+        // - An already-confident upright band skips the probe, so the common
+        //   case pays nothing. No upside-down page in the corpus scored that
+        //   well, so a flip could not have won anyway.
+        // - The flip must beat upright by [`BAND_FLIP_MARGIN`] rather than
+        //   merely tie, which suppresses the corpus's one wrong-direction
+        //   vote and every exact tie (where the two orientations produce the
+        //   same score and there is genuinely nothing to choose between).
+        let upright_score = scored.map_or(0.0, |(_, score)| score);
+        let confident = upright_score >= geometry::MRZ_BAND_CONFIDENT_SCORE;
+        let (rotation, image, lines, word_boxes, mrz_band) = if confident {
+            (rotation, image, lines, word_boxes, scored.map(|(b, _)| b))
+        } else {
+            let flipped = rotate_image(&image, 180);
+            let (f_lines, f_word_boxes) =
+                geometry_pass(&self.engine, &flipped).unwrap_or_default();
+            let f_scored = geometry::detect_mrz_band_scored(&f_lines, MRZ_CHARSET);
+            let flipped_score = f_scored.map_or(0.0, |(_, score)| score);
+
+            if should_flip_180(upright_score, flipped_score) {
                 if verbose {
                     eprintln!(
-                        "[synthpass-ocr] orientation: confident MRZ band in upper third at {rotation}°; flipping 180°"
+                        "[synthpass-ocr] orientation: MRZ band scores {flipped_score:.4} flipped \
+                         vs {upright_score:.4} upright; flipping 180°"
                     );
                 }
-                let flipped = rotate_image(&image, 180);
-                let (lines, word_boxes) = geometry_pass(&self.engine, &flipped).unwrap_or_default();
-                let mrz_band = geometry::detect_mrz_band(&lines, MRZ_CHARSET);
-                ((rotation + 180) % 360, flipped, lines, word_boxes, mrz_band)
+                (
+                    (rotation + 180) % 360,
+                    flipped,
+                    f_lines,
+                    f_word_boxes,
+                    f_scored.map(|(b, _)| b),
+                )
+            } else {
+                (rotation, image, lines, word_boxes, scored.map(|(b, _)| b))
             }
-            None => (rotation, image, lines, word_boxes, mrz_band),
         };
         let portrait = geometry::detect_portrait(&word_boxes, image.width(), image.height());
 
@@ -437,6 +464,25 @@ const ROTATION_CANDIDATES: [u16; 3] = [90, 180, 270];
 /// orientation detection (see `recognize_detailed`'s doc comment).
 const ROTATION_MARGIN: f64 = 1.2;
 
+/// How much better the 180°-flipped page's MRZ-band score must be than the
+/// upright one's before `recognize_detailed` commits to the flip. Same
+/// value and the same bias as [`ROTATION_MARGIN`] — ties and close calls
+/// default to "leave it alone" — but a separate constant because it applies
+/// to a different quantity (`geometry::detect_mrz_band_scored`'s band score,
+/// not the line-aspect score) and would move independently.
+///
+/// **Measured.** Over the 42-image `samples/` corpus scored in both
+/// orientations, this margin gets the direction right on 41 of 42 with zero
+/// false flips. Every genuine correction clears it comfortably (the smallest
+/// winning ratio is 1.27, most are 2–5×). It also suppresses the corpus's
+/// only wrong-direction vote — `Passport_of_Serbia_ID_2009_version.jpg`
+/// scores 0.4474 upside-down vs 0.3804 upright, a 1.18× lead that falls just
+/// short of this bar — and the four exact ties, where both orientations
+/// score identically and there is nothing to choose between them. Serbia
+/// 2009 is therefore the one page in the corpus this cannot re-orient: an
+/// honest miss, not a silent wrong answer.
+const BAND_FLIP_MARGIN: f64 = 1.2;
+
 /// A3 — cheap, detection-only page-orientation heuristic. Scores how
 /// "line-shaped" the detected text is at each right-angle rotation: Latin
 /// text reads in wide, short horizontal lines once `find_text_lines` groups
@@ -453,9 +499,9 @@ const ROTATION_MARGIN: f64 = 1.2;
 /// right-side-up page from a fully upside-down one — disambiguating that
 /// would need a recognition-confidence signal, which this deliberately does
 /// not run (see [`ROTATION_MARGIN`]'s doc comment). This function does not
-/// close that gap; `recognize_detailed` does, one layer up, using the
-/// content-and-geometry `mrz_band` signal it computes right after calling
-/// this (see [`band_in_upper_third`]) — a content-based tie-break, not a
+/// close that gap; `recognize_detailed` does, one layer up, by scoring the
+/// content-and-geometry `mrz_band` in both orientations and keeping the
+/// better (see [`should_flip_180`]) — a content-based tie-break, not a
 /// generic recognition-confidence one, and only ever a correction *after*
 /// this function has already run, never a change to what this function
 /// itself returns.
@@ -485,19 +531,16 @@ fn choose_rotation(engine: &OcrsEngine, image: &RgbImage) -> Option<(u16, RgbIma
     best.map(|(angle, rotated, _)| (angle, rotated))
 }
 
-/// Does `band`'s vertical centre sit in the page's upper third? The signal
-/// `recognize_detailed`'s post-`choose_rotation` MRZ tie-break acts on (see
-/// there). "Upper third" rather than "upper half": the MRZ is generally the
-/// bottom-most content block on an ICAO layout, so even a photo/data-heavy
-/// front side rarely pushes a correctly-oriented MRZ band's centre past the
-/// halfway line — a stricter third keeps the tie-break from firing on a page
-/// that's merely MRZ-heavy in its layout rather than genuinely upside-down.
-fn band_in_upper_third(band: BBox, image_h: u32) -> bool {
-    if image_h == 0 {
-        return false;
-    }
-    let center_y = f64::from(band.y) + f64::from(band.h) / 2.0;
-    center_y < f64::from(image_h) / 3.0
+/// The 0°/180° decision, factored out of `recognize_detailed` so it can be
+/// pinned by a test against the measured corpus rather than only exercised
+/// through a real-model run. `true` iff the flipped page's MRZ-band score
+/// beats the upright one's by [`BAND_FLIP_MARGIN`].
+///
+/// Multiplying by the margin (rather than comparing a difference) also makes
+/// a `0.0` upright score behave correctly on its own: any real flipped band
+/// beats it, and two absent bands tie at zero and stay put.
+fn should_flip_180(upright_score: f64, flipped_score: f64) -> bool {
+    flipped_score > upright_score * BAND_FLIP_MARGIN && flipped_score > 0.0
 }
 
 /// Detection-only orientation score for one candidate rotation — see
@@ -681,29 +724,41 @@ fn mrz_shaped_lines(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Pins the 0°/180° decision against the real numbers it was derived
+    /// from — the `samples/` sweep described on [`BAND_FLIP_MARGIN`] — so a
+    /// future tweak to either constant has to face the corpus rather than
+    /// just recompile.
     #[test]
-    fn band_in_upper_third_true_only_near_the_top() {
-        let image_h = 900;
-        let top_band = BBox {
-            x: 0.0,
-            y: 50.0,
-            w: 400.0,
-            h: 60.0,
-        }; // centre at 80, well under 300 (a third of 900)
-        assert!(band_in_upper_third(top_band, image_h));
+    fn flip_decision_matches_the_measured_corpus() {
+        // Genuine corrections: the page as given is upside-down, flipping it
+        // recovers the real MRZ. (fixture-as-given, flipped) band scores.
+        for (upright, flipped, name) in [
+            (0.1765, 0.7318, "Croatian_passport_data_page"),
+            (0.0301, 0.9216, "Canada_Passport_Specimen_2"),
+            (0.7132, 0.9080, "North_Macedonia_Passport_Specimen"), // narrowest real win, 1.27x
+            (0.3608, 0.6149, "Kosovo_Passport_Specimen_2"),
+            (0.0000, 0.6105, "Croatia_Border_Pass_Specimen_Back"),
+        ] {
+            assert!(
+                should_flip_180(upright, flipped),
+                "{name}: {flipped} vs {upright} should flip"
+            );
+        }
 
-        let bottom_band = BBox {
-            x: 0.0,
-            y: 750.0,
-            w: 400.0,
-            h: 60.0,
-        }; // centre at 780, the ordinary upright-MRZ location
-        assert!(!band_in_upper_third(bottom_band, image_h));
-
+        // Must not flip: the corpus's one wrong-direction vote (a 1.18x lead,
+        // just under the margin) and an exact tie, where both orientations
+        // score the same and there is nothing to choose between them.
         assert!(
-            !band_in_upper_third(top_band, 0),
-            "zero-height image must not divide by zero"
+            !should_flip_180(0.3804, 0.4474),
+            "Passport_of_Serbia_ID_2009: a 1.18x lead is below the margin"
         );
+        assert!(
+            !should_flip_180(0.3781, 0.3781),
+            "Kazakhstan_Passport_Specimen: an exact tie must not flip"
+        );
+
+        // A page with no band either way carries no evidence at all.
+        assert!(!should_flip_180(0.0, 0.0), "no band either way must not flip");
     }
 
     #[test]
