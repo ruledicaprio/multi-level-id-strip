@@ -47,6 +47,7 @@ The Rust toolchain and `std` are dual MIT/Apache-2.0 (© The Rust Project Develo
 | `tesseract.js` 5.1.1 (browser OCR — fetched + SHA-256-verified at deploy time by `web/fetch-vendor.sh`, served same-origin; no CDN at runtime) | Apache-2.0 |
 | Qwen 2.5 1.5B Instruct GGUF (downloaded at runtime, not vendored) | Apache-2.0 © Alibaba Cloud |
 | **OCR-B model `web/tessdata/mrz.traineddata`** | **BSD-3-Clause © DoubangoTelecom** — see below |
+| **`synthpass-gen` fonts** (`crates/synthpass-gen/fonts/ocr-b.ttf`, `sans.ttf`) | **SIL OFL 1.1** — see below |
 
 ### DoubangoTelecom OCR-B trained data (BSD-3-Clause)
 
@@ -54,6 +55,22 @@ The vendored MRZ OCR model (`web/tessdata/mrz.traineddata`) is redistributed fro
 [DoubangoTelecom/tesseractMRZ](https://github.com/DoubangoTelecom/tesseractMRZ) under the
 BSD-3-Clause license. The full license text is preserved at
 [`web/tessdata/LICENSE`](web/tessdata/LICENSE) and attributed in the live-demo footer.
+
+### `synthpass-gen` fonts (SIL OFL 1.1)
+
+Two fonts are vendored to render real glyphs when `synthpass-gen` is built with
+`--features embedded-fonts` (see [`crates/synthpass-gen/fonts/README.md`](crates/synthpass-gen/fonts/README.md)):
+
+- **`ocr-b.ttf`**, redistributed from [jaycee723/ocr-b](https://github.com/jaycee723/ocr-b),
+  © 2019 Raisty, Reserved Font Name "OCR-B". Full text:
+  [`crates/synthpass-gen/fonts/OFL-ocr-b.txt`](crates/synthpass-gen/fonts/OFL-ocr-b.txt).
+- **`sans.ttf`** (PT Sans Regular), redistributed from Google Fonts'
+  [`google/fonts` ofl/ptsans](https://github.com/google/fonts/tree/main/ofl/ptsans),
+  © 2010 ParaType Ltd., Reserved Font Names "PT Sans"/"ParaType". Full text:
+  [`crates/synthpass-gen/fonts/OFL-sans.txt`](crates/synthpass-gen/fonts/OFL-sans.txt).
+
+Both are default-off (`embedded-fonts` is not in `synthpass-gen`'s default feature set), so
+neither font ships in any binary unless that feature is explicitly enabled at build time.
 
 ---
 

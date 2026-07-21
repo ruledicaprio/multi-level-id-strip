@@ -71,16 +71,21 @@ flowchart LR
 
 - Milestones land as reviewable commits; **M1 → M2 → M3 → M4** is the dependency spine on the
   generation side. **M5** (Atlas) can interleave once M4's corpus exists to grade it against.
-- Builds are verified through the Ubuntu Docker builder (`mlis-builder` / `mlis-dev`); the
-  desktop/Windows environment has no local Rust linker.
-- The workspace crate rename (`mlis-*` → `synthpass-*`) is a prerequisite tracked separately in
-  [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md); milestone crate names above assume it has
-  landed.
-- **Open dependency:** M1/M2 were built in a prior session and are committed-but-unpushed on
-  another machine (branches `feat/v2-m1-mrz-emitter` @ `5c3d82b`, `feat/v2-m2-synthpass-core`
-  @ `c03550e`). Retrieve (push + fetch) before continuing; recreating is the fallback. M2's
-  glyph rendering is blocked on OFL **OCR-B** + **sans** fonts being supplied at
-  `crates/synthpass/fonts/` and built with `--features embedded-fonts`.
+- Builds are verified through the Ubuntu Docker builder (`synthpass-builder`, see
+  `docker/Dockerfile.builder` / [`CONTRIBUTING.md`](../CONTRIBUTING.md)); native `cargo` also
+  works directly on Windows/macOS/Linux without a linker workaround.
+- The workspace crate rename (`mlis-*` → `synthpass-*`) has landed — see
+  [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md) for the executed mapping.
+- **M1, M2, and M3 are done.** `mrz::format_td3`, the `synthpass-gen` factory, the degradation
+  profiles, and the `synthpass generate` CLI subcommand are all shipped and tested. M2's font
+  blocker is resolved: OFL **OCR-B** (`jaycee723/ocr-b`, © Raisty) and **PT Sans** (Google Fonts
+  `ofl/ptsans`, © ParaType) are vendored at `crates/synthpass-gen/fonts/` (see that directory's
+  README for provenance/license and [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)); build
+  with `--features embedded-fonts` for real glyph rendering instead of placeholder bars.
+- **M4 is next and unblocked** — with real fonts in place, a golden-corpus accuracy gate is now
+  meaningful. **M5** has only its `ExtractionV2` schema landed so far
+  (`crates/synthpass-core/src/v2.rs`); the rest of the Atlas DoDs (OCR region detection, job
+  queue, observability, licensing-tier enforcement, GBNF decoding) are not started.
 
 ## Future Work
 
