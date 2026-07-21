@@ -21,6 +21,22 @@
 //!
 //! What this is not: a posterior probability. See `Support`'s doc comment —
 //! the ranking is ordinal on purpose.
+//!
+//! **`UnrecognizedNationality` and `NonAlphabeticName`** (added after the
+//! above) were chosen by measuring candidate checks over ~150 specimens
+//! (`crates/synthpass-ocr/examples/integrity_survey.rs`,
+//! `docs/integrity-survey.jsonl`) before shipping them: both fired only on
+//! records that an existing finding already flagged, never alone on a
+//! checksum-valid, otherwise-`Accepted` document. A third candidate —
+//! reconstructing the 39-char name field via `mrz::emit`'s canonicalization
+//! and comparing against the raw line — was measured and **rejected**: it
+//! false-positived on multiple genuine, checksum-valid specimens (e.g.
+//! `Spain_Passport_Specimen.png`) because `mrz::parser::clean_name` is lossy
+//! — it collapses any interior filler run of 2+ `<` to a single space via
+//! `.trim()`, so a name with a wider-than-minimum filler gap can never be
+//! byte-reconstructed from the parsed `surname`/`given_names` strings alone.
+//! Same failure shape as a naive filler-count check would have: measure
+//! before shipping.
 
 use mrz::MrzData;
 use serde::{Deserialize, Serialize};
@@ -80,6 +96,23 @@ pub enum Finding {
         #[zeroize(skip)]
         surname_len: usize,
     },
+    /// `nationality` is not a recognized ICAO/ISO 3166-1 code. Separate from
+    /// `IssuingCountryNationalityMismatch` — that only fires when
+    /// `nationality` *is* recognized but disagrees with `issuing_country`.
+    /// Worth checking on its own: the TD3 composite check digit excludes
+    /// `nationality` entirely (see the module doc comment), so nothing else
+    /// in the parser or the checksum math ever looks at this field.
+    UnrecognizedNationality { got: String },
+    /// A ASCII digit appears in `surname` or `given_names`. ICAO 9303 names
+    /// are alphabetic by convention, but `parser::ensure_charset` accepts
+    /// `0-9` across the whole line (it has to — line 2 is mostly digits), so
+    /// nothing upstream of this module rejects a digit landing in a name
+    /// field. Deliberately doesn't carry the matched character or the name
+    /// itself: which field is enough to act on, and it keeps this variant
+    /// off the highest-PII field in the record. `field` is always
+    /// `"surname"` or `"given_names"` — not PII, but `String` (not
+    /// `&'static str`) so `Finding` can keep deriving `Deserialize`.
+    NonAlphabeticName { field: String },
 }
 
 /// Verdict for an [`MrzData`] record, from the checks in this module.
@@ -123,6 +156,23 @@ pub fn check_line1_integrity(m: &MrzData) -> Verdict {
     if m.given_names.is_empty() && m.surname.len() > SUSPICIOUSLY_LONG_UNSPLIT_NAME {
         reasons.push(Finding::MissingNameSeparator {
             surname_len: m.surname.len(),
+        });
+    }
+
+    if mrz::country_name(&m.nationality).is_none() {
+        reasons.push(Finding::UnrecognizedNationality {
+            got: m.nationality.clone(),
+        });
+    }
+
+    if m.surname.chars().any(|c| c.is_ascii_digit()) {
+        reasons.push(Finding::NonAlphabeticName {
+            field: "surname".to_string(),
+        });
+    }
+    if m.given_names.chars().any(|c| c.is_ascii_digit()) {
+        reasons.push(Finding::NonAlphabeticName {
+            field: "given_names".to_string(),
         });
     }
 
@@ -205,6 +255,58 @@ mod tests {
         let mut m = base();
         "CHER".clone_into(&mut m.surname);
         String::new().clone_into(&mut m.given_names);
+        assert_eq!(check_line1_integrity(&m), Verdict::Accepted);
+    }
+
+    #[test]
+    fn an_unrecognized_nationality_is_flagged() {
+        let mut m = base();
+        "ZZZ".clone_into(&mut m.nationality);
+        assert_eq!(
+            check_line1_integrity(&m),
+            Verdict::NeedsReview {
+                reasons: vec![Finding::UnrecognizedNationality { got: "ZZZ".into() }]
+            }
+        );
+    }
+
+    #[test]
+    fn a_digit_in_surname_is_flagged() {
+        let mut m = base();
+        "ER1KSSON".clone_into(&mut m.surname);
+        assert_eq!(
+            check_line1_integrity(&m),
+            Verdict::NeedsReview {
+                reasons: vec![Finding::NonAlphabeticName {
+                    field: "surname".to_string()
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn a_digit_in_given_names_is_flagged() {
+        let mut m = base();
+        "ANNA MAR1A".clone_into(&mut m.given_names);
+        assert_eq!(
+            check_line1_integrity(&m),
+            Verdict::NeedsReview {
+                reasons: vec![Finding::NonAlphabeticName {
+                    field: "given_names".to_string()
+                }]
+            }
+        );
+    }
+
+    /// The failure mode a naive filler-count/round-trip check would have hit
+    /// (see the module doc comment): a wider-than-minimum internal gap
+    /// between given names (parsed as extra spaces, since `clean_name`
+    /// converts every interior `<` in the raw MRZ to one space each) must
+    /// never be flagged by anything in this module.
+    #[test]
+    fn a_document_with_a_wide_internal_name_gap_is_not_flagged() {
+        let mut m = base();
+        "ANNA   MARIA".clone_into(&mut m.given_names);
         assert_eq!(check_line1_integrity(&m), Verdict::Accepted);
     }
 
