@@ -60,10 +60,19 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(feature = "embedded-fonts"))]
     fn not_embedded_by_default() {
         // Default-feature build: no font files are vendored in the repo, so
         // this must degrade gracefully rather than panic or fail to compile.
-        #[cfg(not(feature = "embedded-fonts"))]
         assert!(matches!(load_fonts(), Err(FontError::NotEmbedded)));
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-fonts")]
+    fn embedded_fonts_parse_successfully() {
+        // With the feature on, both vendored OFL fonts must actually parse —
+        // a corrupt or mismatched TTF would silently fall back to placeholder
+        // bars instead of failing loudly, which is worse than a build error.
+        assert!(load_fonts().is_ok());
     }
 }
