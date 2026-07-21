@@ -140,6 +140,37 @@ flowchart LR
 
 Beyond M6, and deliberately not committed:
 
+- **A larger Tier-2 model — target [Qwen3-4B](https://hf.co/Qwen/Qwen3-4B-GGUF), not the 3B/7B
+  the design record names.** [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md)
+  §8's "bring a bigger model (Qwen 3B/7B)" line predates two facts that change the answer, and
+  **this file wins** where they disagree:
+
+  | Candidate | Q4_K_M size | License | Fits a 4 GB card |
+  |---|---|---|---|
+  | Qwen2.5-1.5B *(shipped default)* | 1.1 GB | Apache-2.0 | yes |
+  | Qwen2.5-3B | ~2 GB | **`other` (Qwen Research)** | yes |
+  | Qwen2.5-7B | ~4.7 GB | Apache-2.0 | no |
+  | **Qwen3-4B** | ~2.5 GB | **Apache-2.0** | **yes** |
+
+  **Qwen2.5-3B is not Apache-2.0.** Recommending it would push a research-licensed weight into a
+  product with paid tiers ([`BRANDING.md`](BRANDING.md) §5) — so it is ruled out on licensing,
+  not capability. 7B is correctly licensed but does not fit a 4 GB consumer card. Qwen3-4B is
+  Apache-2.0, fits, and is a model generation newer than anything the design record considered.
+
+  No code is required to try one: `SYNTHPASS_MODEL_PATH` selects the GGUF and
+  `SYNTHPASS_MODEL_SHA256` re-pins the integrity check (`synthpass-llm/src/verify.rs`), so a model
+  swap stays an explicit, checksum-verified bootstrap step and never becomes runtime fetching.
+  Shipping weights remains out of scope. Note that actual **GPU offload** is a separate unlock:
+  `llama-cpp-2` is built CPU-only here, and design-record §11 keeps GPU builds out of scope.
+- **Deterministic field normalization before a bigger model.** The GBNF parity run (see the M5 note
+  above) shows part of the Tier-2 gap is *scoring*, not comprehension — the model read
+  `nationality` correctly and was marked wrong for format: `"CROATIA"` vs `HRV`,
+  `"JAAK-KRISTJAN"` vs `JAAK KRISTJAN`. `crates/mrz/src/countries.rs` already carries a
+  zero-dependency ICAO/ISO 3166-1 table, but only `code → name`; adding the reverse plus separator
+  and `sex`-vocabulary normalization would recover an estimated 2–3 of 42 fields (**+5–7 points**)
+  with no model, no dependencies, and full auditability — "deterministic before probabilistic"
+  applied to post-processing. Worth doing *before* any model comparison, so a bigger model is
+  measured on comprehension rather than formatting.
 - **Fine-tuning loop** — a `synthpass finetune` track that closes the improvement loop by
   training the local Tier-2 model on generated corpora (explicitly *out* of v2).
 - **Barcode/PDF417 decoding** — the extraction schema already reserves the slot; a decoder is
