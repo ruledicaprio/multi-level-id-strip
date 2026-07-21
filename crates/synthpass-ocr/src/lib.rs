@@ -96,9 +96,11 @@ const MRZ_BEAM_WIDTH: u32 = 24;
 /// off-by-one here silently truncates the last variant on exactly the
 /// dense/bilingual scans the geometry-band variants exist for, which is the
 /// failure this budget is sized to avoid. `max_passes_admits_every_variant`
-/// pins the arithmetic so a future variant can't quietly outgrow it. The
-/// `SYNTHPASS_OCR_MAX_SECONDS` wall-clock budget is what actually bounds a
-/// pathological document.
+/// pins the constant arithmetic and `max_passes_reaches_the_last_worst_case_variant`
+/// proves it against a real worst-case fixture and the loop's actual break
+/// condition, so a future variant — or another off-by-one — can't quietly
+/// outgrow this budget again. The `SYNTHPASS_OCR_MAX_SECONDS` wall-clock
+/// budget is what actually bounds a pathological document.
 const DEFAULT_MAX_PASSES: usize = MAX_RETRY_VARIANTS + 1;
 
 /// Worst-case number of retry variants: `preprocess::mrz_variants`'s 6 plus
@@ -766,27 +768,78 @@ mod tests {
         );
     }
 
-    /// Guards the other half of the arithmetic above: `MAX_RETRY_VARIANTS` is
-    /// only meaningful if the variant producers actually stay within it. Both
-    /// are counted against a real (if tiny) image so adding a variant to
-    /// either function without updating the constant fails here rather than
-    /// silently eating the budget.
+    /// Guards the other half of the arithmetic above, and does it for real
+    /// rather than against a blank image: a blank image never triggers
+    /// `mrz_variants`' row-density isolation (it falls back to the blind
+    /// crop, yielding only 3), so it can only ever prove "producers stay
+    /// under budget," never "the worst case actually needs the whole
+    /// budget." This builds the actual worst-case input — bottom stripes
+    /// that trigger isolation (6 from `mrz_variants`) plus a geometry band
+    /// far enough from the blind crop to be treated as distinct (2 more from
+    /// `geometry_band_variants`) — for the full 8, then mirrors
+    /// `recognize_detailed`'s retry-loop break condition line-for-line
+    /// (`passes_run` seeded at 1 for the first variant, checked *before*
+    /// that variant runs) to prove the loop, as coded, actually reaches the
+    /// last of them under [`DEFAULT_MAX_PASSES`] — not just that the
+    /// constants agree with each other.
     #[test]
-    fn variant_producers_stay_within_the_budgeted_count() {
-        let image = image::RgbImage::from_pixel(400, 600, image::Rgb([255, 255, 255]));
+    fn max_passes_reaches_the_last_worst_case_variant() {
+        let mut image = image::RgbImage::from_pixel(400, 300, image::Rgb([250, 250, 250]));
+        // Two MRZ-like dark stripes tight against the bottom, isolated from
+        // blank margin above — the same shape `preprocess.rs`'s own
+        // isolation test uses to trigger the trailing isolated-band
+        // variants.
+        for line in 0..2u32 {
+            let y0 = 300 - (2 * 10 + 4) + line * 14;
+            for y in y0..y0 + 10 {
+                for x in 0..400u32 {
+                    if x % 3 != 0 {
+                        image.put_pixel(x, y, image::Rgb([10, 10, 10]));
+                    }
+                }
+            }
+        }
         let blind = preprocess::mrz_variants(&image);
+        assert_eq!(
+            blind.len(),
+            6,
+            "fixture should trigger row-density isolation (2 blind-crop + 1 full-page + 3 isolated)"
+        );
+
+        // Far from the blind bottom-45% crop (top ~165 for this 300px-tall
+        // image), so it counts as a distinct band rather than a duplicate.
         let band = BBox {
             x: 0.0,
             y: 20.0,
             w: 400.0,
-            h: 60.0,
+            h: 20.0,
         };
         let geometry = preprocess::geometry_band_variants(&image, band);
-        assert!(
-            blind.len() + geometry.len() <= MAX_RETRY_VARIANTS,
-            "producers yielded {} + {} variants, over the budgeted {MAX_RETRY_VARIANTS}",
-            blind.len(),
-            geometry.len()
+        assert_eq!(
+            geometry.len(),
+            2,
+            "a geometry band distinct from the blind crop should add both treatments"
+        );
+
+        let all_variants: Vec<_> = blind.into_iter().chain(geometry).collect();
+        assert_eq!(
+            all_variants.len(),
+            MAX_RETRY_VARIANTS,
+            "worst-case variant count this fixture was built to hit"
+        );
+
+        let mut passes_that_ran = 0usize;
+        for (passes_run, _) in (1usize..).zip(all_variants.iter()) {
+            if passes_run >= DEFAULT_MAX_PASSES {
+                break;
+            }
+            passes_that_ran += 1;
+        }
+        assert_eq!(
+            passes_that_ran,
+            all_variants.len(),
+            "DEFAULT_MAX_PASSES ({DEFAULT_MAX_PASSES}) must let the retry loop reach every \
+             worst-case variant, including the last geometry-band one"
         );
     }
 
