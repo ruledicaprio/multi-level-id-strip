@@ -93,9 +93,32 @@ flowchart LR
   further is tracked as follow-up work, not blocking M4. The CI gate is set to 30% (a deliberate
   margin below the measured 55%, absorbing cross-platform floating-point variance in OCR inference
   between machines) so it catches real regressions without being flaky.
-- **M5** has only its `ExtractionV2` schema landed so far (`crates/synthpass-core/src/v2.rs`); the
-  rest of the Atlas DoDs (OCR region detection, job queue, observability, licensing-tier
-  enforcement, GBNF decoding) are not started.
+- **M5's `ExtractionV2` schema is landed** (`crates/synthpass-core/src/v2.rs`), and a
+  **safe-batch kickoff of six small, independently-safe, zero-new-dependency slices has since
+  shipped on top of it (PRs #33–#37)**: `synthpass-license` now actually enforces
+  `mlis_min_version` in `check()` instead of just parsing it (PR #33); the v1→v2 lift scores
+  confidence **per-field** rather than one flat number (PR #34); `synthpass-serve` gained a
+  `GET /health` endpoint, deliberately outside the auth middleware since health probes are
+  typically unauthenticated (PR #35); the Tier-2 concurrency semaphore is now configurable via
+  `SYNTHPASS_LLM_CONTEXTS` instead of hardcoded to 1 (PR #36); and the queue-full 503 now carries
+  a `Retry-After: 5` header, distinct from the (non-retriable) license-expired 503 (PR #37).
+- **M5 licensing enforcement (Atlas §7) has landed.** `synthpass_license::check_feature` +
+  `LicenseError::FeatureNotLicensed` make the `features` list load-bearing, a `Tier` enum supplies
+  the `trial`/`pro`/`enterprise` presets from [`BRANDING.md`](BRANDING.md) §5, and a new
+  `max_llm_contexts` payload field meters Tier-2 concurrency (env asks, license permits, effective
+  = min, and `synthpass-serve` says so out loud when it lowers the request). Legacy licenses with
+  no `features` list are grandfathered into everything (break B6). The per-*endpoint* half of this
+  gate — 403ing a named surface — lands with the surfaces themselves: `metrics` with `/metrics`,
+  `batch` with the batch API, rather than as a middleware with nothing yet to guard.
+  The remaining Atlas DoDs — OCR region detection by geometry, the bounded job queue / batch API
+  (`Pipeline::submit`/`JobHandle`, `POST /api/extract/batch`, `GET /api/jobs/{id}`), `tracing` +
+  `/metrics`, and GBNF-constrained Tier-2 decoding — are still not started.
+- **A nightly bench-data-collection workflow has also shipped** (PR #38,
+  `.github/workflows/bench-data-collection.yml`): runs `synthpass-bench --profile all` daily
+  against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on a
+  dedicated `bench-data` branch. This is data collection only, no tuning logic yet — it's a first
+  step toward the "Future Work" section's fine-tuning loop and statistical dataset
+  characterisation below, not a new M4/M5 deliverable in its own right.
 
 ## Future Work
 

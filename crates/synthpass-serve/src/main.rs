@@ -30,7 +30,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use synthpass_pipeline::{Pipeline, ProcessEvent};
+use synthpass_license::FEATURE_MULTI_CONTEXT as MULTI_CONTEXT;
+use synthpass_pipeline::{env_llm_contexts, Pipeline, ProcessEvent};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -46,12 +47,24 @@ struct AppState {
     /// this many queued/in-flight Tier-2 requests, instead of accepting them
     /// unboundedly and leaving them to block behind the single-GPU semaphore.
     max_queue_depth: usize,
-    /// The license's `expires_unix`, cached at boot. `None` when
-    /// `SYNTHPASS_LICENSE_SKIP=1`. Full signature verification only happens once
-    /// at boot (see [`license_refusal`]); this cheap expiry-only comparison
-    /// runs per-request so a long-running server stops serving once expired,
-    /// without re-verifying the signature on every request.
-    license_expires_unix: Option<u64>,
+    /// The verified license, cached at boot. `None` when
+    /// `SYNTHPASS_LICENSE_SKIP=1` — which is an explicit opt-out of licensing
+    /// altogether (a self-built OSS Community binary), and therefore unlocks
+    /// every feature; the gate meters the official binary, it isn't DRM.
+    ///
+    /// Full signature verification only happens once at boot (see
+    /// [`license_refusal`]); the checks derived from this — expiry via
+    /// [`license_is_expired`], features via
+    /// [`synthpass_license::check_feature`] — are cheap comparisons over the
+    /// already-verified payload.
+    license: Option<synthpass_license::LicensePayload>,
+}
+
+impl AppState {
+    /// The license's `expires_unix`, or `None` when licensing is skipped.
+    fn license_expires_unix(&self) -> Option<u64> {
+        self.license.as_ref().map(|p| p.expires_unix)
+    }
 }
 
 type ApiError = (StatusCode, HeaderMap, Json<Value>);
@@ -108,6 +121,52 @@ fn queue_full_error(msg: impl std::fmt::Display) -> ApiError {
 fn license_is_expired(license_expires_unix: Option<u64>) -> bool {
     license_expires_unix
         .is_some_and(|expires_unix| synthpass_license::current_unix() > expires_unix)
+}
+
+/// Reconcile the Tier-2 context count the environment *asks* for with what
+/// the license *permits*, returning the effective count plus an operator-facing
+/// note when the license lowered it (silently ignoring an env var an operator
+/// deliberately set is worse than refusing it out loud).
+///
+/// Two independent limits, both fail-safe:
+///
+/// - the `multi-context` **feature** — a license that doesn't name it stays at
+///   a single context, no matter what was asked for;
+/// - the `max_llm_contexts` **cap** — a numeric ceiling, applied by
+///   [`synthpass_license::effective_llm_contexts`].
+///
+/// `None` (licensing skipped via `SYNTHPASS_LICENSE_SKIP=1`) imposes neither:
+/// see [`AppState::license`]. Pure, so it's unit-testable the same way
+/// [`startup_refusal`] and [`license_refusal`] are.
+fn resolve_llm_contexts(
+    license: Option<&synthpass_license::LicensePayload>,
+    requested: usize,
+) -> (usize, Option<String>) {
+    let requested = requested.max(1);
+    let Some(payload) = license else {
+        return (requested, None);
+    };
+
+    if requested > 1 && synthpass_license::check_feature(payload, MULTI_CONTEXT).is_err() {
+        return (
+            1,
+            Some(format!(
+                "SYNTHPASS_LLM_CONTEXTS={requested} ignored: license does not include the \
+                 '{MULTI_CONTEXT}' feature — running with 1 Tier-2 context"
+            )),
+        );
+    }
+
+    match synthpass_license::effective_llm_contexts(payload, requested) {
+        (effective, true) => (
+            effective,
+            Some(format!(
+                "SYNTHPASS_LLM_CONTEXTS={requested} capped to {effective} by the license's \
+                 max_llm_contexts"
+            )),
+        ),
+        (effective, false) => (effective, None),
+    }
 }
 
 /// Whether `addr` (a `host:port`, `[ipv6]:port`, or bare host) names a loopback
@@ -206,11 +265,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(status) => status,
         Err(reason) => return Err(reason.into()),
     };
-    let license_expires_unix = license_status.as_ref().map(|s| s.payload.expires_unix);
+    let license = license_status.as_ref().map(|s| s.payload.clone());
 
     tokio::fs::create_dir_all(&work_dir).await?;
 
-    let pipeline = Pipeline::from_env();
+    // The environment asks; the license permits. Resolve before building the
+    // pipeline so the semaphore is sized correctly from the start rather than
+    // being walked back later.
+    let (llm_contexts, contexts_note) = resolve_llm_contexts(license.as_ref(), env_llm_contexts());
+    if let Some(note) = contexts_note {
+        println!("⚠️  [synthpass-serve] {note}");
+    }
+    if license
+        .as_ref()
+        .is_some_and(synthpass_license::features_grandfathered)
+    {
+        // Break B6: say it once at boot rather than waving every request
+        // through in silence.
+        println!(
+            "ℹ️  [synthpass-serve] license names no features — grandfathered into all of them"
+        );
+    }
+
+    let pipeline = Pipeline::from_env_with_llm_contexts(llm_contexts);
     let scheme = if env::var("SYNTHPASS_TLS_CERT").is_ok() {
         "https"
     } else {
@@ -236,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         keep_work,
         token,
         max_queue_depth,
-        license_expires_unix,
+        license,
     });
 
     let app = Router::new()
@@ -289,7 +366,7 @@ async fn index() -> Html<&'static str> {
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     let infer = state.pipeline.infer_health().await;
     let infer_ok = infer.is_ok();
-    let license_expired = license_is_expired(state.license_expires_unix);
+    let license_expired = license_is_expired(state.license_expires_unix());
     Json(json!({
         "status": if infer_ok && !license_expired { "ok" } else { "degraded" },
         "ocr_engine": state.pipeline.ocr_engine(),
@@ -327,7 +404,7 @@ async fn extract(
     // Cheap expiry-only check (no signature re-verification — that only
     // happens once at boot) so a long-running server past its license's
     // expiry stops serving instead of running indefinitely on a stale check.
-    if license_is_expired(state.license_expires_unix) {
+    if license_is_expired(state.license_expires_unix()) {
         return Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "license has expired",
@@ -536,7 +613,77 @@ mod tests {
             tier: "enterprise".into(),
             features: vec![],
             mlis_min_version: None,
+            max_llm_contexts: None,
         }
+    }
+
+    /// The `AppState.license` an `expires_unix`-shaped test wants: `None`
+    /// means licensing was skipped entirely, `Some(t)` a license expiring at
+    /// `t`.
+    fn license_expiring_at(expires_unix: Option<u64>) -> Option<synthpass_license::LicensePayload> {
+        expires_unix.map(sample_license_payload)
+    }
+
+    #[test]
+    fn skipped_licensing_imposes_no_context_limit() {
+        // SYNTHPASS_LICENSE_SKIP=1 is an explicit opt-out, not a trial tier.
+        assert_eq!(resolve_llm_contexts(None, 4), (4, None));
+    }
+
+    #[test]
+    fn missing_multi_context_feature_forces_a_single_context() {
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Trial.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let (effective, note) = resolve_llm_contexts(Some(&payload), 4);
+        assert_eq!(effective, 1);
+        let note = note.expect("an ignored env var must be explained, not silently dropped");
+        assert!(
+            note.contains(MULTI_CONTEXT) && note.contains('4'),
+            "the note should name both the feature and what was asked for: {note}"
+        );
+    }
+
+    #[test]
+    fn licensed_multi_context_is_granted() {
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Pro.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        assert_eq!(resolve_llm_contexts(Some(&payload), 4), (4, None));
+    }
+
+    #[test]
+    fn max_llm_contexts_caps_the_request_and_says_so() {
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Pro.default_features(),
+            max_llm_contexts: Some(2),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let (effective, note) = resolve_llm_contexts(Some(&payload), 4);
+        assert_eq!(effective, 2, "the env asks for 4, the license permits 2");
+        assert!(note
+            .expect("a capped request must be explained")
+            .contains('2'));
+    }
+
+    #[test]
+    fn a_single_context_never_trips_the_feature_gate() {
+        // The default (1 context) is core capability, not capacity — a trial
+        // license must still serve Tier 2, quietly.
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Trial.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        assert_eq!(resolve_llm_contexts(Some(&payload), 1), (1, None));
+    }
+
+    #[test]
+    fn a_grandfathered_license_keeps_multi_context() {
+        // Break B6: `features: []` predates gating and unlocks everything.
+        let payload = sample_license_payload(4_000_000_000); // features: vec![]
+        assert_eq!(resolve_llm_contexts(Some(&payload), 4), (4, None));
     }
 
     #[test]
@@ -578,7 +725,7 @@ mod tests {
             keep_work: false,
             token: None,
             max_queue_depth: 0,
-            license_expires_unix: None,
+            license: None,
         });
         let app = Router::new()
             .route("/api/extract", post(extract))
@@ -612,7 +759,7 @@ mod tests {
             keep_work: false,
             token: None,
             max_queue_depth: 4,
-            license_expires_unix: Some(0), // expired at the Unix epoch
+            license: license_expiring_at(Some(0)), // expired at the Unix epoch
         });
         let app = Router::new()
             .route("/api/extract", post(extract))
@@ -645,7 +792,7 @@ mod tests {
             keep_work: false,
             token: None,
             max_queue_depth: 4,
-            license_expires_unix,
+            license: license_expiring_at(license_expires_unix),
         });
         Router::new()
             .route("/health", get(health))
@@ -698,7 +845,7 @@ mod tests {
             keep_work: false,
             token: token.map(str::to_string),
             max_queue_depth: 4,
-            license_expires_unix: None,
+            license: None,
         })
     }
 
