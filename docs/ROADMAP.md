@@ -141,9 +141,36 @@ flowchart LR
   already failed. Revisiting with a larger GGUF is Future Work, not an M5 gate.
   Landing it also uncovered and fixed a latent double-accept in the sampling loop that had been
   harmless only because every sampler in the chain was stateless.
-  The remaining Atlas DoDs are **OCR region detection by geometry + orientation** and the
-  **bounded job queue / parallel OCR / batch API** (`Pipeline::submit`/`JobHandle`,
-  `POST /api/extract/batch`, `GET /api/jobs/{id}`). Everything else in §3–§8 has landed.
+- **M5 is complete — every Atlas DoD in §3–§8 has landed.** The last two closed as follows.
+  The **bounded job queue / parallel OCR / batch API** (`Pipeline::submit`/`JobHandle`,
+  `POST /api/extract/batch`, `GET /api/jobs/{id}`) shipped in PR #49, with the OCR geometry API
+  and deterministic field normalizers in #48 and their wiring into `ExtractionV2` in #50.
+
+  **OCR region detection by geometry + orientation** shipped last, and its orientation half is
+  worth recording honestly because the first design was wrong in an instructive way.
+  `detect_mrz_band` scores a line group on *recognized text* — MRZ-charset density, ICAO line
+  length, OCR-B glyph aspect — so the obvious 0°/180° rule ("the MRZ sits at the bottom on every
+  ICAO layout, so a confident band near the top means the page is upside down") is circular: on a
+  genuinely inverted page the real MRZ is garbled and scores *low*, unrelated mid-page noise wins
+  the band instead, and the band's position then describes the noise rather than the MRZ. It
+  measurably did not fire on the one specimen it was written for.
+
+  What replaced it is a comparison, not a guess: score the band on the page *and* on its 180°
+  flip, keep the better. Measured over the 42-image `samples/` corpus scored in both
+  orientations, that gets the direction right on **41 of 42 with zero false flips**. Both
+  constants come out of the sweep rather than intuition — a 1.2× margin (mirroring
+  `ROTATION_MARGIN`'s existing "ties leave it alone" bias) is cleared by every genuine correction
+  (narrowest 1.27×, most 2–5×) while suppressing the corpus's one wrong-direction vote and its
+  four exact ties, and a 0.75 confidence bar skips the extra pass entirely when the upright band
+  is already stronger than any inverted page in the corpus managed (0.7132). The sweep also ruled
+  out the cheaper design of thresholding a single orientation: inverted scores overlap genuine
+  upright ones across most of the range, so no absolute cutoff separates them. One page
+  (`Passport_of_Serbia_ID_2009_version.jpg`) stays mis-oriented — an honest miss, not a silent
+  wrong answer.
+
+  Note what this does **not** close, and what M6's orientation note below therefore still owes:
+  the estimator remains a brute-force search over right angles, and the tie-break costs a second
+  geometry pass on any page whose band is not already confident.
 - **Per-field CER measurement, and the uncomfortable thing it found.** `synthpass-bench` now
   reports a per-field character error rate alongside the binary hit, because a hit rate says
   *that* a document failed and never *where*. `hit` itself is unchanged, so the CI gate keeps its
@@ -194,8 +221,10 @@ flowchart LR
 
   Three caveats, all real:
   - **It cannot resolve 0° vs 180°** (nor 90° vs 270°). Orientation mod π is intrinsic to the
-    mathematics, not a limitation of the estimator. The MRZ-band-at-the-bottom tie-break shipped in
-    M5 stays necessary — the angle gives you the *axis*, only content gives you the *direction*.
+    mathematics, not a limitation of the estimator. The MRZ-band tie-break shipped in M5 stays
+    necessary — the angle gives you the *axis*, only content gives you the *direction*. Note that
+    it is a *comparison between the two orientations*, not the band-position test this note
+    originally assumed; see the M5 completion note above for why position does not work.
   - Rotating by an arbitrary angle resamples and costs sharpness, whereas right-angle rotations are
     lossless. Snap to the nearest right angle within tolerance; resample only for genuine tilt.
   - It assumes `ocrs`'s per-word angle is meaningful for near-horizontal text; verify empirically
