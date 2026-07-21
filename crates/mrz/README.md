@@ -19,11 +19,11 @@ The core crate has **no runtime dependencies** and compiles to
 | TD3    | Passports                         | 2 lines × 44      | ✅ parse + emit |
 | TD2    | Official travel documents / IDs   | 2 lines × 36      | ✅ parse + emit |
 | TD1    | ID cards                          | 3 lines × 30      | ✅ parse + emit |
-| MRV-A / MRV-B | Visas                      | —                 | ❌ not yet |
+| MRV-A  | Visas (passport-book)             | 2 lines × 44      | ✅ parse |
+| MRV-B  | Visas (smaller)                   | 2 lines × 36      | ✅ parse |
 
-Machine Readable Visa (MRV-A / MRV-B) parsing and document-number overflow
-(numbers longer than the 9-character field) are known gaps tracked for a later
-release.
+MRV emission and document-number overflow (numbers longer than the 9-character
+field) are known gaps tracked for a later release.
 
 ## Usage
 
@@ -31,7 +31,7 @@ Add it to `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrz = "0.1"
+mrz = "0.2"
 ```
 
 ### Scan free-form OCR text
