@@ -1,0 +1,10 @@
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206550,"profile":"clean","hit":true,"reason":null,"elapsed_ms":1483}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206551,"profile":"mobile","hit":false,"reason":"checksum invalid: Checks { document_number: false, date_of_birth: true, date_of_expiry: true, personal_number: false, composite: true }","elapsed_ms":3803}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206552,"profile":"scanner","hit":false,"reason":"checksum invalid: Checks { document_number: false, date_of_birth: true, date_of_expiry: true, personal_number: true, composite: false }","elapsed_ms":3436}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206553,"profile":"worn","hit":false,"reason":"checksum invalid: Checks { document_number: false, date_of_birth: true, date_of_expiry: true, personal_number: false, composite: false }","elapsed_ms":3500}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206554,"profile":"border-kiosk","hit":true,"reason":null,"elapsed_ms":968}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206555,"profile":"clean","hit":true,"reason":null,"elapsed_ms":696}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206556,"profile":"mobile","hit":false,"reason":"checksum invalid: Checks { document_number: true, date_of_birth: true, date_of_expiry: true, personal_number: false, composite: false }","elapsed_ms":3694}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206557,"profile":"scanner","hit":true,"reason":null,"elapsed_ms":1451}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206558,"profile":"worn","hit":true,"reason":null,"elapsed_ms":752}
+{"run_timestamp_unix":1784604719,"git_sha":"38dc1bac485e0fb0a07710f0da66bc7ccb0d3e96","seed":206559,"profile":"border-kiosk","hit":true,"reason":null,"elapsed_ms":1346}
