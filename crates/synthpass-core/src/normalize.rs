@@ -165,6 +165,34 @@ pub fn document_type(input: &str) -> String {
     }
 }
 
+/// Apply every per-field normalizer above to a full [`crate::Extraction`]
+/// record, in place, leaving absent (`None`) fields untouched. This is the
+/// natural aggregate over the individually pure/idempotent functions this
+/// module already proves — applying each field's normalizer independently
+/// means the whole record is idempotent too (`extraction(extraction(x)) ==
+/// extraction(x)`), which the test below checks directly rather than trusting
+/// the composition.
+///
+/// `document_number`, `surname`, and `personal_number` have no normalizer
+/// here and pass through by omission: `document_number` is already
+/// MRZ-alphanumeric by construction on both tiers, and `surname`/
+/// `personal_number` are free text with no canonical form for this module to
+/// converge on without inventing one.
+///
+/// **Not called from here on Tier-1 output.** `synthpass-pipeline` is the
+/// only caller (`extract_via_inferer`/`extract_via_inferer_stream`, Tier-2
+/// only) — see this module's top doc for why a second opinion on an
+/// already checksum-proven Tier-1 read must never run through this.
+pub fn extraction(e: &mut crate::Extraction) {
+    e.issuing_country = e.issuing_country.take().map(|v| issuing_country(&v));
+    e.nationality = e.nationality.take().map(|v| nationality(&v));
+    e.given_names = e.given_names.take().map(|v| given_names(&v));
+    e.date_of_birth = e.date_of_birth.take().map(|v| date(&v));
+    e.date_of_expiry = e.date_of_expiry.take().map(|v| date(&v));
+    e.sex = e.sex.take().map(|v| sex(&v));
+    e.document_type = e.document_type.take().map(|v| document_type(&v));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +358,85 @@ mod tests {
             let once = document_type(input);
             let twice = document_type(&once);
             assert_eq!(once, twice, "not idempotent for input: {input:?}");
+        }
+    }
+
+    // ── extraction (full-record aggregate) ──
+
+    /// Build an [`crate::Extraction`] with every normalizable field set to a
+    /// realistic, not-yet-normalized value — the kind of parity miss a
+    /// Tier-2 visual-zone read actually produces (module-level doc: `"CROATIA"`
+    /// vs `HRV`, `"JAAK-KRISTJAN"` vs `JAAK KRISTJAN`) — plus the untouched
+    /// fields left deliberately messy, so a test bug that accidentally
+    /// normalizes one of them would be caught by the "left alone" assertions
+    /// below.
+    fn messy_extraction() -> crate::Extraction {
+        let mut e = crate::Extraction::default();
+        e.document_type = Some("passport".into());
+        e.issuing_country = Some("Croatia".into());
+        e.document_number = Some("x1234567".into());
+        e.surname = Some("specimen".into());
+        e.given_names = Some("JAAK-KRISTJAN".into());
+        e.nationality = Some("croatia".into());
+        e.date_of_birth = Some("12.08.1974".into());
+        e.sex = Some("female".into());
+        e.date_of_expiry = Some("2014-7-1".into());
+        e.personal_number = Some("abc123".into());
+        e
+    }
+
+    #[test]
+    fn extraction_normalizes_every_field_it_owns() {
+        let mut e = messy_extraction();
+        extraction(&mut e);
+        assert_eq!(e.document_type.as_deref(), Some("P"));
+        assert_eq!(e.issuing_country.as_deref(), Some("HRV"));
+        assert_eq!(e.given_names.as_deref(), Some("JAAK KRISTJAN"));
+        assert_eq!(e.nationality.as_deref(), Some("HRV"));
+        assert_eq!(e.date_of_birth.as_deref(), Some("1974-08-12"));
+        assert_eq!(e.sex.as_deref(), Some("F"));
+        assert_eq!(e.date_of_expiry.as_deref(), Some("2014-07-01"));
+    }
+
+    #[test]
+    fn extraction_leaves_fields_it_does_not_own_untouched() {
+        let mut e = messy_extraction();
+        extraction(&mut e);
+        // No normalizer exists for these — they must survive verbatim.
+        assert_eq!(e.document_number.as_deref(), Some("x1234567"));
+        assert_eq!(e.surname.as_deref(), Some("specimen"));
+        assert_eq!(e.personal_number.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn extraction_leaves_absent_fields_as_none() {
+        let mut e = crate::Extraction::default();
+        extraction(&mut e);
+        assert_eq!(e.document_type, None);
+        assert_eq!(e.issuing_country, None);
+        assert_eq!(e.given_names, None);
+        assert_eq!(e.nationality, None);
+        assert_eq!(e.date_of_birth, None);
+        assert_eq!(e.sex, None);
+        assert_eq!(e.date_of_expiry, None);
+    }
+
+    #[test]
+    fn extraction_is_idempotent_over_a_full_record() {
+        // Table-driven: a normalized-once record and a from-scratch messy
+        // one both converge to the same fixed point on a second pass —
+        // `extraction(extraction(x)) == extraction(x)`, proven field by
+        // field rather than assumed from the individual functions' own
+        // idempotency tests above.
+        let cases: Vec<crate::Extraction> = vec![messy_extraction(), crate::Extraction::default()];
+        for mut e in cases {
+            extraction(&mut e);
+            let once = e.clone();
+            extraction(&mut e);
+            assert_eq!(
+                e, once,
+                "extraction() is not idempotent for input: {once:?}"
+            );
         }
     }
 }
