@@ -3,6 +3,10 @@ name = "synthpass-bench"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "synthpass-bench"
+path = "src/bin/synthpass-bench.rs"
+
 [dependencies]
 # Always built with real glyphs regardless of synthpass-gen's own default —
 # a benchmark measuring OCR hit rate against placeholder bars would be
@@ -12,3 +16,5 @@ synthpass-ocr = { path = "../synthpass-ocr" }
 # The zero-dep checksum oracle deciding hit vs. miss.
 mrz = { path = "../mrz" }
 image = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
