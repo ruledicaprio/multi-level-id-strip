@@ -467,11 +467,16 @@ Questions or bugs: [open an issue](https://github.com/ruledicaprio/SynthPass/iss
 ## 🙏 Acknowledgments
 
 A solo-authored project where the ideas, architecture and direction are the human's; the execution
-was AI-accelerated.
+was AI-accelerated, across more than one model.
 
 - **Rusmir Skopljak** ([@ruledicaprio](https://github.com/ruledicaprio)) — creator, architecture and direction
-- **Claude Opus 4.8 / Sonnet 5** (Anthropic) — orchestration and implementation
-- **DeepSeek v4 Pro** — advisory and architectural review
+- **Claude Opus 4.8 / Sonnet 5** (Anthropic) — orchestration and implementation across the codebase
+- **DeepSeek** — foundational architectural strategy
+  ([docs/FOUNDATIONAL_STRATEGY.md](docs/FOUNDATIONAL_STRATEGY.md)), advisory and architectural review
+- **GPT** (OpenAI) — the v2.0 roadmap and design records
+  ([docs/synthpass_v2_0.md](docs/synthpass_v2_0.md),
+  [docs/mlis_v2_0_0_preliminary_design.md](docs/mlis_v2_0_0_preliminary_design.md)), building on
+  DeepSeek's foundational strategy
 
 Copyright and authorship rest with the human author; the AI tools are credited as assistants, not
 legal authors.
