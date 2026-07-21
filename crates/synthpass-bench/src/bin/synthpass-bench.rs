@@ -1,0 +1,280 @@
+//! `synthpass-bench` — dev/CI corpus runner for M4 (Regression &
+//! Benchmarking). Not a subcommand of the shipped `synthpass` CLI: this is a
+//! vendor-side measurement tool, same separation `synthpass-license-issuer`
+//! already demonstrates for a non-user-facing binary living in its own
+//! crate.
+//!
+//! Generates a fixed, deterministic corpus from seeds `seed..seed+count`,
+//! runs each through [`synthpass_bench::check_document`], and writes a
+//! generated JSON report — the report is never hand-edited, only produced by
+//! this binary, so it stays an honest reflection of the last real run.
+//!
+//! ```text
+//! synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH]
+//!   --count N       number of documents to check (default: 100)
+//!   --seed N        base seed; document i uses seed N+i (default: 0)
+//!   --profile NAME  clean|mobile|scanner|worn|border-kiosk|all (default: clean)
+//!                   "all" round-robins the five profiles across the corpus
+//!   --out PATH      report JSON path (default: bench-report.json)
+//! ```
+
+use serde::Serialize;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+use synthpass_bench::check_document;
+use synthpass_gen::degrade::{apply_profile, CaptureProfile};
+use synthpass_gen::{generate_from_seed, GeneratorConfig};
+use synthpass_ocr::NativeOcr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileChoice {
+    Clean,
+    Mobile,
+    Scanner,
+    Worn,
+    BorderKiosk,
+    All,
+}
+
+const ROUND_ROBIN: [ProfileChoice; 5] = [
+    ProfileChoice::Clean,
+    ProfileChoice::Mobile,
+    ProfileChoice::Scanner,
+    ProfileChoice::Worn,
+    ProfileChoice::BorderKiosk,
+];
+
+impl ProfileChoice {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "clean" => Ok(Self::Clean),
+            "mobile" => Ok(Self::Mobile),
+            "scanner" => Ok(Self::Scanner),
+            "worn" => Ok(Self::Worn),
+            "border-kiosk" => Ok(Self::BorderKiosk),
+            "all" => Ok(Self::All),
+            other => Err(format!(
+                "unknown profile '{other}' (valid: clean, mobile, scanner, worn, border-kiosk, all)"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Clean => "clean",
+            Self::Mobile => "mobile",
+            Self::Scanner => "scanner",
+            Self::Worn => "worn",
+            Self::BorderKiosk => "border-kiosk",
+            Self::All => "all",
+        }
+    }
+
+    /// `None` for `Clean` (no degradation applied); `All` resolves to a
+    /// concrete per-seed choice before this is ever called.
+    fn capture_profile(self) -> Option<CaptureProfile> {
+        match self {
+            Self::Clean | Self::All => None,
+            Self::Mobile => Some(CaptureProfile::Mobile),
+            Self::Scanner => Some(CaptureProfile::Scanner),
+            Self::Worn => Some(CaptureProfile::Worn),
+            Self::BorderKiosk => Some(CaptureProfile::BorderKiosk),
+        }
+    }
+}
+
+struct Args {
+    count: u64,
+    seed: u64,
+    profile: ProfileChoice,
+    out: String,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            count: 100,
+            seed: 0,
+            profile: ProfileChoice::Clean,
+            out: "bench-report.json".to_string(),
+        }
+    }
+}
+
+fn usage() {
+    eprintln!("Usage: synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH]");
+    eprintln!("  --count N       number of documents to check (default: 100)");
+    eprintln!("  --seed N        base seed; document i uses seed N+i (default: 0)");
+    eprintln!("  --profile NAME  clean|mobile|scanner|worn|border-kiosk|all (default: clean)");
+    eprintln!("  --out PATH      report JSON path (default: bench-report.json)");
+}
+
+/// Hand-rolled flag parser, consistent with `synthpass-cli`'s style (no
+/// clap, no new arg-parsing dependency).
+fn parse_args(args: &[String]) -> Result<Args, String> {
+    let mut parsed = Args::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--count" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--count requires a value".to_string())?;
+                parsed.count = v
+                    .parse::<u64>()
+                    .map_err(|_| format!("--count: not a valid number: {v}"))?;
+                i += 2;
+            }
+            "--seed" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--seed requires a value".to_string())?;
+                parsed.seed = v
+                    .parse::<u64>()
+                    .map_err(|_| format!("--seed: not a valid number: {v}"))?;
+                i += 2;
+            }
+            "--profile" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--profile requires a value".to_string())?;
+                parsed.profile = ProfileChoice::parse(v)?;
+                i += 2;
+            }
+            "--out" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--out requires a value".to_string())?;
+                parsed.out = v.clone();
+                i += 2;
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok(parsed)
+}
+
+#[derive(Serialize)]
+struct SeedResult {
+    seed: u64,
+    profile: &'static str,
+    hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    elapsed_ms: u128,
+}
+
+#[derive(Serialize)]
+struct Report {
+    timestamp_unix: u64,
+    profile: &'static str,
+    count: u64,
+    seed_start: u64,
+    hits: u64,
+    hit_rate: f64,
+    results: Vec<SeedResult>,
+}
+
+fn resolve_profile(choice: ProfileChoice, seed_index: u64) -> ProfileChoice {
+    if choice == ProfileChoice::All {
+        ROUND_ROBIN[(seed_index as usize) % ROUND_ROBIN.len()]
+    } else {
+        choice
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let parsed = match parse_args(&args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            usage();
+            std::process::exit(1);
+        }
+    };
+
+    let root = repo_root();
+    let ocr = NativeOcr::load(
+        &root.join("text-detection.rten"),
+        &root.join("text-recognition.rten"),
+    )
+    .expect("failed to load OCR models — run from the repo root");
+
+    let seeds: Vec<u64> = (0..parsed.count).map(|i| parsed.seed + i).collect();
+
+    // Deliberately sequential: `NativeOcr::recognize` budgets its MRZ-retry
+    // passes against wall-clock time (see synthpass-ocr's `max_duration`).
+    // Running checks concurrently oversubscribes the CPU against rten's own
+    // internal inference threads, inflating each pass's wall-clock time and
+    // causing the retry budget to cut passes short — this was observed to
+    // drop the measured hit rate by ~20 points versus running one at a time,
+    // which is a resource-contention artifact, not a real accuracy signal.
+    let results: Vec<SeedResult> = seeds
+        .iter()
+        .map(|&seed| {
+            let resolved = resolve_profile(parsed.profile, seed - parsed.seed);
+            let config = GeneratorConfig::new(seed);
+            let (image, labels, _passport) = generate_from_seed(&config);
+            let image = match resolved.capture_profile() {
+                Some(cp) => apply_profile(&image, cp, seed),
+                None => image,
+            };
+            let result = check_document(&ocr, &image, &labels);
+            SeedResult {
+                seed,
+                profile: resolved.as_str(),
+                hit: result.hit,
+                reason: result.reason,
+                elapsed_ms: result.elapsed.as_millis(),
+            }
+        })
+        .collect();
+
+    let hits = results.iter().filter(|r| r.hit).count() as u64;
+    let hit_rate = hits as f64 / parsed.count.max(1) as f64;
+
+    for r in &results {
+        if r.hit {
+            println!("seed {} [{}]: HIT ({} ms)", r.seed, r.profile, r.elapsed_ms);
+        } else {
+            println!(
+                "seed {} [{}]: MISS ({} ms) - {}",
+                r.seed,
+                r.profile,
+                r.elapsed_ms,
+                r.reason.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
+    println!(
+        "\n{hits}/{} = {:.1}% (profile: {})",
+        parsed.count,
+        hit_rate * 100.0,
+        parsed.profile.as_str()
+    );
+
+    let report = Report {
+        timestamp_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        profile: parsed.profile.as_str(),
+        count: parsed.count,
+        seed_start: parsed.seed,
+        hits,
+        hit_rate,
+        results,
+    };
+    let json = serde_json::to_string_pretty(&report).expect("serialize report");
+    std::fs::write(&parsed.out, json).expect("write report");
+    println!("report written to {}", parsed.out);
+}
+
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/synthpass-bench is two levels below the repo root")
+        .to_path_buf()
+}

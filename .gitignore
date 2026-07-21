@@ -7,6 +7,9 @@ target/
 # Local OCR model weights (ocrs/rten — ~12 MB, auto-downloaded per README)
 *.rten
 
+# synthpass-bench's generated JSON reports — generated, not hand-edited/committed
+bench-report*.json
+
 # Web app upload/working directory (may contain uploaded PII)
 work/
 
