@@ -10,12 +10,14 @@
 //! this binary, so it stays an honest reflection of the last real run.
 //!
 //! ```text
-//! synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH]
-//!   --count N       number of documents to check (default: 100)
-//!   --seed N        base seed; document i uses seed N+i (default: 0)
-//!   --profile NAME  clean|mobile|scanner|worn|border-kiosk|all (default: clean)
-//!                   "all" round-robins the five profiles across the corpus
-//!   --out PATH      report JSON path (default: bench-report.json)
+//! synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH] [--min-hit-rate F]
+//!   --count N          number of documents to check (default: 100)
+//!   --seed N           base seed; document i uses seed N+i (default: 0)
+//!   --profile NAME     clean|mobile|scanner|worn|border-kiosk|all (default: clean)
+//!                      "all" round-robins the five profiles across the corpus
+//!   --out PATH         report JSON path (default: bench-report.json)
+//!   --min-hit-rate F   exit non-zero if the measured hit rate is below F
+//!                      (e.g. 0.35); unset means "measure and report only"
 //! ```
 
 use serde::Serialize;
@@ -88,6 +90,7 @@ struct Args {
     seed: u64,
     profile: ProfileChoice,
     out: String,
+    min_hit_rate: Option<f64>,
 }
 
 impl Default for Args {
@@ -97,16 +100,20 @@ impl Default for Args {
             seed: 0,
             profile: ProfileChoice::Clean,
             out: "bench-report.json".to_string(),
+            min_hit_rate: None,
         }
     }
 }
 
 fn usage() {
-    eprintln!("Usage: synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH]");
-    eprintln!("  --count N       number of documents to check (default: 100)");
-    eprintln!("  --seed N        base seed; document i uses seed N+i (default: 0)");
-    eprintln!("  --profile NAME  clean|mobile|scanner|worn|border-kiosk|all (default: clean)");
-    eprintln!("  --out PATH      report JSON path (default: bench-report.json)");
+    eprintln!(
+        "Usage: synthpass-bench [--count N] [--seed N] [--profile NAME] [--out PATH] [--min-hit-rate F]"
+    );
+    eprintln!("  --count N          number of documents to check (default: 100)");
+    eprintln!("  --seed N           base seed; document i uses seed N+i (default: 0)");
+    eprintln!("  --profile NAME     clean|mobile|scanner|worn|border-kiosk|all (default: clean)");
+    eprintln!("  --out PATH         report JSON path (default: bench-report.json)");
+    eprintln!("  --min-hit-rate F   exit non-zero if the measured hit rate is below F");
 }
 
 /// Hand-rolled flag parser, consistent with `synthpass-cli`'s style (no
@@ -146,6 +153,16 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     .get(i + 1)
                     .ok_or_else(|| "--out requires a value".to_string())?;
                 parsed.out = v.clone();
+                i += 2;
+            }
+            "--min-hit-rate" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--min-hit-rate requires a value".to_string())?;
+                parsed.min_hit_rate = Some(
+                    v.parse::<f64>()
+                        .map_err(|_| format!("--min-hit-rate: not a valid number: {v}"))?,
+                );
                 i += 2;
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -269,6 +286,17 @@ fn main() {
     let json = serde_json::to_string_pretty(&report).expect("serialize report");
     std::fs::write(&parsed.out, json).expect("write report");
     println!("report written to {}", parsed.out);
+
+    if let Some(min) = parsed.min_hit_rate {
+        if hit_rate < min {
+            eprintln!(
+                "❌ hit rate {:.1}% is below the required minimum {:.1}%",
+                hit_rate * 100.0,
+                min * 100.0
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 fn repo_root() -> std::path::PathBuf {
