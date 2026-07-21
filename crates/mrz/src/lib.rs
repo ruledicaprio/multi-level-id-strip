@@ -35,7 +35,7 @@ pub use checksum::{check_digit, verify};
 pub use countries::{code_for_name, country_name};
 pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
 pub use emit::{format_td3, Td3Fields};
-pub use parser::{find_and_parse, parse_td1, parse_td2, parse_td3};
+pub use parser::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
 
 /// Per-field check-digit verification results.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,14 @@ pub enum Format {
     Td3,
     Td2,
     Td1,
+    /// Machine readable visa, type A (ICAO 9303 part 7): two 44-char lines,
+    /// geometry mirrors TD3 through the expiry check digit, but there is no
+    /// personal-number field and no composite check digit.
+    MrvA,
+    /// Machine readable visa, type B (ICAO 9303 part 7): two 36-char lines,
+    /// geometry mirrors TD2 through the expiry check digit, but there is no
+    /// personal-number field and no composite check digit.
+    MrvB,
 }
 
 /// Parsed and validated MRZ data.
@@ -358,6 +366,72 @@ mod tests {
             find_and_parse("just a regular paragraph\nwith two lines"),
             Err(MrzError::NotFound)
         );
+    }
+
+    // MRV-A specimen line 2 (44 chars); check-digit arithmetic (7-3-1, values
+    // A-Z=10-35, <=0):
+    //   doc#   XK9305487: X=33,K=20,9,3,0,5,4,8,7 * 7,3,1,7,3,1,7,3,1
+    //          = 231+60+9+21+0+5+28+24+7 = 385 -> 385 mod 10 = 5
+    //   DOB    850221: 8,5,0,2,2,1 * 7,3,1,7,3,1
+    //          = 56+15+0+14+6+1 = 92 -> 92 mod 10 = 2
+    //   expiry 270314: 2,7,0,3,1,4 * 7,3,1,7,3,1
+    //          = 14+21+0+21+3+4 = 63 -> 63 mod 10 = 3
+    const MRV_A_L1: &str = "V<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+    const MRV_A_L2: &str = "XK93054875BRA8502212F2703143R5T6U7V8W9<<<<<<";
+
+    #[test]
+    fn mrv_a_specimen_fully_valid() {
+        let d = parse_mrv_a(MRV_A_L1, MRV_A_L2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvA);
+        assert_eq!(d.document_type, "V");
+        assert_eq!(d.issuing_country, "UTO");
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.given_names, "ANNA MARIA");
+        assert_eq!(d.nationality, "BRA");
+        assert_eq!(d.date_of_birth, "1985-02-21");
+        assert_eq!(d.sex, "F");
+        assert_eq!(d.date_of_expiry, "2027-03-14");
+        assert_eq!(d.document_number, "XK9305487");
+        assert_eq!(d.personal_number.as_deref(), Some("R5T6U7V8W9"));
+    }
+
+    // MRV-B specimen line 2 (36 chars); check-digit arithmetic (7-3-1, values
+    // A-Z=10-35, <=0):
+    //   doc#   L23456789: L=21,2,3,4,5,6,7,8,9 * 7,3,1,7,3,1,7,3,1
+    //          = 147+6+3+28+15+6+49+24+9 = 287 -> 287 mod 10 = 7
+    //   DOB    920101: 9,2,0,1,0,1 * 7,3,1,7,3,1
+    //          = 63+6+0+7+0+1 = 77 -> 77 mod 10 = 7
+    //   expiry 270630: 2,7,0,6,3,0 * 7,3,1,7,3,1
+    //          = 14+21+0+42+9+0 = 86 -> 86 mod 10 = 6
+    const MRV_B_L1: &str = "V<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<";
+    const MRV_B_L2: &str = "L234567897DEU9201017F2706306QW12ER34";
+
+    #[test]
+    fn mrv_b_specimen_fully_valid() {
+        let d = parse_mrv_b(MRV_B_L1, MRV_B_L2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.format, Format::MrvB);
+        assert_eq!(d.nationality, "DEU");
+        assert_eq!(d.date_of_birth, "1992-01-01");
+        assert_eq!(d.date_of_expiry, "2027-06-30");
+        assert_eq!(d.document_number, "L23456789");
+        assert_eq!(d.personal_number.as_deref(), Some("QW12ER34"));
+    }
+
+    #[test]
+    fn mrv_a_tampered_dob_fails_checksum() {
+        let tampered = MRV_A_L2.replacen("850221", "860221", 1);
+        let d = parse_mrv_a(MRV_A_L1, &tampered).unwrap();
+        assert!(!d.checks.date_of_birth);
+        assert!(!d.valid());
+    }
+
+    #[test]
+    fn mrv_rejects_non_v_document_code() {
+        let line1 = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+        let result = parse_mrv_a(line1, MRV_A_L2);
+        assert!(matches!(result, Err(MrzError::BadDocumentCode(_))));
     }
 
     #[test]
