@@ -9,7 +9,7 @@
 //! sidecar and OCR engine resolve.
 
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Query, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, Request, State},
     http::{
         header::{AUTHORIZATION, RETRY_AFTER},
         HeaderMap, HeaderValue, StatusCode,
@@ -30,8 +30,10 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use synthpass_license::{FEATURE_METRICS, FEATURE_MULTI_CONTEXT as MULTI_CONTEXT};
-use synthpass_pipeline::{env_llm_contexts, MetricsSnapshot, Pipeline, ProcessEvent};
+use synthpass_license::{FEATURE_BATCH, FEATURE_METRICS, FEATURE_MULTI_CONTEXT as MULTI_CONTEXT};
+use synthpass_pipeline::{
+    env_llm_contexts, DocumentStatus, JobId, MetricsSnapshot, Pipeline, ProcessEvent,
+};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 const INDEX_HTML: &str = include_str!("index.html");
@@ -83,13 +85,13 @@ const LEGACY_V1_ACCEPT: &str = "application/vnd.mlis.v1+json";
 /// `Accept: application/vnd.mlis.v1+json` gets the v1-only shape for one
 /// major release. Pure function of the request parts so it's unit-testable.
 fn wants_legacy_v1(params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
-    if params.get("v").map_or(false, |v| v == "1") {
+    if params.get("v").is_some_and(|v| v == "1") {
         return true;
     }
     headers
         .get(axum::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok())
-        .map_or(false, |accept| accept.contains(LEGACY_V1_ACCEPT))
+        .is_some_and(|accept| accept.contains(LEGACY_V1_ACCEPT))
 }
 
 fn api_error(status: StatusCode, msg: impl std::fmt::Display) -> ApiError {
@@ -112,6 +114,22 @@ fn queue_full_error(msg: impl std::fmt::Display) -> ApiError {
             .expect("a formatted u64 is always a valid header value"),
     );
     (status, headers, body)
+}
+
+/// Keep only a sanitized file extension from an untrusted upload filename —
+/// the OCR engine uses it purely for format detection (image vs. the
+/// now-unsupported PDF/HEIC, see `synthpass_pipeline::ocr`), so anything
+/// that isn't plain ASCII alphanumerics is dropped rather than trusted
+/// as-is. Shared by `extract` and `extract_batch` so both save uploads under
+/// the same naming convention.
+fn sanitized_ext(filename: &str) -> String {
+    filename
+        .rsplit('.')
+        .next()
+        .filter(|e| *e != filename)
+        .map(|e| e.chars().filter(char::is_ascii_alphanumeric).collect())
+        .filter(|e: &String| !e.is_empty())
+        .unwrap_or_else(|| "bin".into())
 }
 
 /// `true` iff `license_expires_unix` names a real expiry that's already
@@ -424,6 +442,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/extract", post(extract))
+        .route("/api/extract/batch", post(extract_batch))
+        .route("/api/jobs/{id}", get(get_job))
         .route("/metrics", get(metrics))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
@@ -551,15 +571,7 @@ async fn extract(
         }
     };
 
-    // Keep only a sanitized extension; the OCR engine uses it for format detection
-    // (image vs. the now-unsupported PDF/HEIC — see `synthpass-pipeline::ocr`).
-    let ext: String = filename
-        .rsplit('.')
-        .next()
-        .filter(|e| *e != filename)
-        .map(|e| e.chars().filter(char::is_ascii_alphanumeric).collect())
-        .filter(|e: &String| !e.is_empty())
-        .unwrap_or_else(|| "bin".into());
+    let ext = sanitized_ext(&filename);
 
     // One id per upload, threaded through every span this request produces so
     // a failure is greppable end to end. The uploaded *filename* is
@@ -642,6 +654,181 @@ async fn cleanup(state: &AppState, paths: &[&PathBuf]) {
     for p in paths {
         let _ = tokio::fs::remove_file(p).await;
     }
+}
+
+/// `POST /api/extract/batch` — multipart upload of N files, submitted as one
+/// [`synthpass_pipeline::Pipeline::submit`] job. Unlike `/api/extract`, this
+/// returns immediately (`202 Accepted` + a job id) rather than streaming: a
+/// batch can run far longer than one SSE connection is reasonable to hold
+/// open, so the client is expected to poll `GET /api/jobs/{id}` instead.
+///
+/// Gated on the `batch` license feature (BRANDING §5: capacity is a
+/// legitimate paid boundary, unlike `/api/extract` itself, which stays
+/// ungated). Reuses `queue_full_error`/`api_error` so refusals are shaped
+/// identically to every other endpoint's.
+async fn extract_batch(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    if let Some(payload) = &state.license {
+        if let Err(e) = synthpass_license::check_feature(payload, FEATURE_BATCH) {
+            return Err(api_error(StatusCode::FORBIDDEN, e));
+        }
+    }
+
+    // Same overload protection as `/api/extract`: a batch's documents will
+    // themselves queue behind `llm_semaphore` the moment any of them miss
+    // Tier 1, so admitting a new batch while that queue is already full just
+    // defers the same rejection to later, less usefully.
+    if state.pipeline.llm_queue_depth() >= state.max_queue_depth {
+        return Err(queue_full_error(
+            "inference queue is full — try again shortly",
+        ));
+    }
+
+    if license_is_expired(state.license_expires_unix()) {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "license has expired",
+        ));
+    }
+
+    // Save every file field to the work dir under a fresh id, same as
+    // `extract`. Documents are kept in upload order — `GET /api/jobs/{id}`
+    // returns per-document results as an array in that same order, so a
+    // caller correlates results to uploads positionally.
+    let mut inputs = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?
+    {
+        let Some(filename) = field.file_name().map(str::to_owned) else {
+            continue;
+        };
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| api_error(StatusCode::BAD_REQUEST, e))?;
+        let ext = sanitized_ext(&filename);
+        let doc_id = uuid::Uuid::new_v4();
+        let path = state.work_dir.join(format!("{doc_id}.{ext}"));
+        tokio::fs::write(&path, &data)
+            .await
+            .map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        inputs.push(path);
+    }
+
+    if inputs.is_empty() {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "no file fields in upload",
+        ));
+    }
+
+    let document_count = inputs.len();
+    let handle = state.pipeline.submit(inputs);
+    let job_id = handle.id();
+    // Counts and an opaque id only — never a filename, matching every other
+    // span in this file (see `extract`'s request_id span for why).
+    tracing::info!(%job_id, document_count, "batch job submitted");
+
+    // Mirror `extract`'s PII hygiene: once the batch finishes, remove every
+    // upload plus the Markdown/JSON it produced, unless KEEP_WORK=1. This
+    // runs detached from the response — the client already has the job id
+    // and polls `GET /api/jobs/{id}` for results, so nothing here needs to
+    // wait on it.
+    if !state.keep_work {
+        tokio::spawn(async move {
+            handle.wait().await;
+            let paths: Vec<PathBuf> = {
+                let docs = handle.documents();
+                docs.iter()
+                    .flat_map(|doc| {
+                        let mut paths = vec![doc.input.clone()];
+                        if let DocumentStatus::Done(result) = &doc.status {
+                            paths.push(result.md_path.clone());
+                            paths.push(result.json_path.clone());
+                        }
+                        paths
+                    })
+                    .collect()
+            };
+            for path in paths {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        });
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({ "job_id": job_id.to_string(), "document_count": document_count })),
+    ))
+}
+
+/// `GET /api/jobs/{id}` — status plus per-document results for a job
+/// submitted via `POST /api/extract/batch`. `404` for an id that was never
+/// submitted, or one that has aged out of the completed-job retention ring
+/// (`SYNTHPASS_QUEUE_CAPACITY`, see `synthpass_pipeline::jobs`).
+///
+/// Gated on the same `batch` feature as the submit endpoint — a license that
+/// can't submit a batch has no legitimate use for its results either.
+async fn get_job(
+    State(state): State<Arc<AppState>>,
+    AxumPath(raw_id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    if let Some(payload) = &state.license {
+        if let Err(e) = synthpass_license::check_feature(payload, FEATURE_BATCH) {
+            return Err(api_error(StatusCode::FORBIDDEN, e));
+        }
+    }
+
+    // `JobId` doesn't implement `serde::Deserialize` (adding `serde` as a
+    // direct dependency just for that would be exactly the kind of
+    // dependency creep this project avoids), so the path segment is taken
+    // as a plain `String` and parsed via `JobId`'s existing `FromStr` impl
+    // instead of `Path<JobId>`.
+    let id: JobId = raw_id
+        .parse()
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid job id"))?;
+
+    let handle = state
+        .pipeline
+        .job(id)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "unknown or expired job id"))?;
+
+    // Same per-document shape as `/api/extract`'s SSE `result` event
+    // (filename omitted — batch documents are correlated by array position,
+    // not name; see `extract_batch`'s doc).
+    let documents: Vec<Value> = handle
+        .documents()
+        .iter()
+        .map(|doc| match &doc.status {
+            DocumentStatus::Pending => json!({ "status": "pending" }),
+            DocumentStatus::Done(result) => json!({
+                "status": "done",
+                "markdown": result.markdown,
+                "extracted": result.extracted,
+                "extracted_v2": result
+                    .extracted_v2
+                    .as_ref()
+                    .map(|v2| serde_json::to_value(v2).expect("ExtractionV2 serializes")),
+                "method": result.method.as_str(),
+                "mrz": result
+                    .mrz
+                    .as_ref()
+                    .map(|m| serde_json::to_value(m).expect("MrzData serializes")),
+                "error": result.llm_error,
+            }),
+            DocumentStatus::Failed(e) => json!({ "status": "failed", "error": e }),
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "job_id": id.to_string(),
+        "status": handle.status().as_str(),
+        "documents": documents,
+    })))
 }
 
 #[cfg(test)]
@@ -1153,5 +1340,159 @@ mod tests {
     async fn auth_allows_any_request_when_no_token_configured() {
         let app = probe_app(state_with_token(None));
         assert_eq!(probe(app, None).await, StatusCode::OK);
+    }
+
+    // ── B3: /api/extract/batch and /api/jobs/{id} ──
+
+    fn batch_state(
+        license: Option<synthpass_license::LicensePayload>,
+        max_queue_depth: usize,
+    ) -> Arc<AppState> {
+        let pipeline = Pipeline::new(
+            Box::new(RustOcrEngine::new(".", false)),
+            Box::new(NativeInferer::new("nonexistent.gguf", 2048)),
+        );
+        Arc::new(AppState {
+            pipeline,
+            work_dir: PathBuf::from("work"),
+            keep_work: false,
+            token: None,
+            max_queue_depth,
+            license,
+        })
+    }
+
+    fn batch_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/api/extract/batch", post(extract_batch))
+            .route("/api/jobs/{id}", get(get_job))
+            .with_state(state)
+    }
+
+    async fn body_string(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn extract_batch_is_403_without_the_batch_feature() {
+        // A trial license names extract/multi-context but not batch —
+        // BRANDING §5's capacity boundary.
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Trial.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let app = batch_app(batch_state(Some(payload), 4));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/extract/batch")
+            .header("content-type", "multipart/form-data; boundary=X-BOUNDARY-X")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains(FEATURE_BATCH),
+            "the refusal must name the missing feature: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_batch_rejects_with_503_when_queue_is_full() {
+        let app = batch_app(batch_state(None, 0));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/extract/batch")
+            .header("content-type", "multipart/form-data; boundary=X-BOUNDARY-X")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers().get(RETRY_AFTER),
+            Some(&HeaderValue::from_static("5")),
+            "batch reuses the identical Retry-After-bearing 503 as /api/extract"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_batch_rejects_an_upload_with_no_file_fields() {
+        // A Pro license clears the feature/queue/license gates, so this
+        // proves the handler's own validation is reached and rejects an
+        // empty multipart body with 400, not a gate-shaped error.
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Pro.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let app = batch_app(batch_state(Some(payload), 4));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/extract/batch")
+            .header("content-type", "multipart/form-data; boundary=X-BOUNDARY-X")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn get_job_is_403_without_the_batch_feature() {
+        let payload = synthpass_license::LicensePayload {
+            features: synthpass_license::Tier::Trial.default_features(),
+            ..sample_license_payload(4_000_000_000)
+        };
+        let app = batch_app(batch_state(Some(payload), 4));
+
+        let req = Request::builder()
+            .uri("/api/jobs/1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_job_404_for_an_id_that_was_never_submitted() {
+        let app = batch_app(batch_state(None, 4));
+
+        let req = Request::builder()
+            .uri("/api/jobs/999999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_job_reports_status_and_documents_for_a_submitted_job() {
+        // An empty batch resolves synchronously to `Failed` without touching
+        // OCR/inference at all (see `Pipeline::submit`'s doc) — this proves
+        // `get_job`'s JSON shape and route wiring against a real submitted
+        // job without needing model files in the test environment.
+        let state = batch_state(None, 4);
+        let handle = state.pipeline.submit(vec![]);
+        let job_id = handle.id();
+        assert_eq!(handle.wait().await, synthpass_pipeline::JobStatus::Failed);
+
+        let app = batch_app(state);
+        let req = Request::builder()
+            .uri(format!("/api/jobs/{job_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "failed");
+        assert_eq!(body["job_id"], job_id.to_string());
+        assert_eq!(body["documents"].as_array().unwrap().len(), 0);
     }
 }
