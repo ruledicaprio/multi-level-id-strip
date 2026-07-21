@@ -42,6 +42,22 @@ extraction.
   against. The four degraded `CaptureProfile` variants (mobile/scanner/worn/border-kiosk) are
   measured/reported as an adversarial corpus but not yet CI-gated; see
   [`docs/ADVERSARIAL.md`](docs/ADVERSARIAL.md).
+- **M5 safe-batch kickoff on the extraction platform (PRs #33–#37).** `synthpass-license` now
+  actually enforces a license's `mlis_min_version` in `check()` instead of parsing and ignoring
+  it, via a new `LicenseError::MinVersionUnmet` and hand-rolled version comparison that fails
+  closed on unparsable input. The v1→v2 schema lift in `synthpass-core` now scores extraction
+  confidence **per-field** (structural-sanity heuristics) instead of one flat number for the
+  whole document. `synthpass-serve` gained a `GET /health` endpoint (OCR engine, infer-backend,
+  and license-expiry status, no PII) that sits outside the auth middleware, since health probes
+  are typically unauthenticated. The Tier-2 concurrency limit is now configurable at runtime via
+  `SYNTHPASS_LLM_CONTEXTS` instead of being hardcoded to a single in-flight LLM call. And the
+  queue-full 503 now returns a `Retry-After: 5` header — the license-expired 503 deliberately
+  does not, since retrying won't fix an expired license.
+- **Nightly bench-data-collection workflow.** A new scheduled CI job
+  (`.github/workflows/bench-data-collection.yml`) runs `synthpass-bench --profile all` daily
+  against a fresh seed window and appends flattened per-document outcomes to `dataset.jsonl` on
+  a dedicated `bench-data` branch, building a corpus toward future auto-tuning of
+  `synthpass-gen`'s degrade parameters. Data collection only — no tuning logic yet.
 
 ### Changed
 - **The required Linux CI job no longer runs ~25 min.** The two real-model OCR smoke steps
