@@ -38,7 +38,32 @@ pub use emit::{
     format_mrv_a, format_mrv_b, format_td1, format_td2, format_td3, MrvAFields, MrvBFields,
     Td1Fields, Td2Fields, Td3Fields,
 };
-pub use parser::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
+pub use parser::{
+    find_and_parse, find_and_parse_with, parse_mrv_a, parse_mrv_a_with, parse_mrv_b,
+    parse_mrv_b_with, parse_td1, parse_td1_with, parse_td2, parse_td2_with, parse_td3,
+    parse_td3_with,
+};
+
+/// Tunables for the parsing entry points.
+///
+/// Every `parse_*` / [`find_and_parse`] function is the `ParseOptions::default()`
+/// case of its `*_with` counterpart, so existing calls are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ParseOptions {
+    /// Two-digit century pivot for [`expand_date_with_pivot`]. Defaults to
+    /// [`CURRENT_YY`]; set it explicitly to pin behaviour instead of inheriting
+    /// the constant this crate was compiled with.
+    pub pivot_yy: u32,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self {
+            pivot_yy: CURRENT_YY,
+        }
+    }
+}
 
 /// Per-field check-digit verification results.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +123,11 @@ pub struct MrzData {
     /// Issuing state or organization (3-letter ICAO code).
     pub issuing_country: String,
     pub document_number: String,
+    /// The reassembled document number when it overflows the 9-character field
+    /// (ICAO 9303 part 4 §4.2.2.2 — TD1/TD2/TD3 only; MRVs have no overflow
+    /// encoding). `None` when the number fits, in which case
+    /// [`document_number`](Self::document_number) is already complete.
+    pub document_number_full: Option<String>,
     pub surname: String,
     pub given_names: String,
     /// Nationality (3-letter ICAO code).
@@ -123,6 +153,14 @@ impl MrzData {
         self.checks.all_valid()
     }
 
+    /// The complete document number: the overflow reassembly when there is
+    /// one, otherwise the 9-character field as printed.
+    pub fn full_document_number(&self) -> &str {
+        self.document_number_full
+            .as_deref()
+            .unwrap_or(&self.document_number)
+    }
+
     /// Human-readable name of the issuing state, if the code is recognized.
     pub fn issuing_country_name(&self) -> Option<&'static str> {
         country_name(&self.issuing_country)
@@ -134,7 +172,62 @@ impl MrzData {
     }
 }
 
+/// Which check-digit-bearing field an error refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
+pub enum Field {
+    DocumentNumber,
+    DateOfBirth,
+    DateOfExpiry,
+    PersonalNumber,
+    Composite,
+}
+
+impl Field {
+    /// Field name as it appears on [`Checks`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DocumentNumber => "document_number",
+            Self::DateOfBirth => "date_of_birth",
+            Self::DateOfExpiry => "date_of_expiry",
+            Self::PersonalNumber => "personal_number",
+            Self::Composite => "composite",
+        }
+    }
+}
+
+impl core::fmt::Display for Field {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Checks {
+    /// The fields whose check digits failed, in field order. Empty when
+    /// [`all_valid`](Checks::all_valid) is `true`.
+    pub fn failed(&self) -> Vec<Field> {
+        [
+            (self.document_number, Field::DocumentNumber),
+            (self.date_of_birth, Field::DateOfBirth),
+            (self.date_of_expiry, Field::DateOfExpiry),
+            (self.personal_number, Field::PersonalNumber),
+            (self.composite, Field::Composite),
+        ]
+        .into_iter()
+        .filter_map(|(ok, f)| (!ok).then_some(f))
+        .collect()
+    }
+
+    /// How many of the five check digits validate — the ranking signal the
+    /// scanner uses to pick its best-effort reading.
+    pub(crate) fn score(&self) -> u8 {
+        5 - self.failed().len() as u8
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MrzError {
     /// Line has the wrong length for the claimed format.
     BadLength { expected: usize, got: usize },
@@ -142,6 +235,13 @@ pub enum MrzError {
     BadCharacter(char),
     /// Document code not recognized for the format.
     BadDocumentCode(String),
+    /// A check digit did not validate against its field.
+    ///
+    /// Note that the `parse_*` functions deliberately do *not* return this:
+    /// they return an [`MrzData`] whose [`Checks`] report the failure, so a
+    /// caller can show the user which digits disagreed. This variant exists
+    /// for callers that convert a failed [`Checks`] into an error of their own.
+    BadChecksum { field: Field, position: usize },
     /// No plausible MRZ found in the supplied text.
     NotFound,
 }
@@ -154,6 +254,9 @@ impl core::fmt::Display for MrzError {
             }
             Self::BadCharacter(c) => write!(f, "invalid MRZ character: {c:?}"),
             Self::BadDocumentCode(c) => write!(f, "unrecognized document code: {c:?}"),
+            Self::BadChecksum { field, position } => {
+                write!(f, "check digit failed for {field} at position {position}")
+            }
             Self::NotFound => write!(f, "no MRZ found in text"),
         }
     }
@@ -473,6 +576,204 @@ mod tests {
         let d = find_and_parse(&merged).unwrap();
         assert!(d.valid(), "checks: {:?}", d.checks);
         assert_eq!(d.format, Format::MrvA);
+    }
+
+    // ---- ICAO 9303 part 4 §4.2.2.2 document-number overflow ----
+
+    #[test]
+    fn td3_long_document_number_round_trips() {
+        let fields = Td3Fields {
+            document_code: "P".into(),
+            issuing_country: "UTO".into(),
+            document_number: "L898902C31234".into(), // 13 chars, overflows 9
+            surname: "ERIKSSON".into(),
+            given_names: "ANNA MARIA".into(),
+            nationality: "UTO".into(),
+            date_of_birth: "740812".into(),
+            sex: "F".into(),
+            date_of_expiry: "120415".into(),
+            personal_number: None,
+        };
+        let mrz = format_td3(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        // First 8 chars + filler, and a filler where the check digit goes.
+        assert_eq!(&l2[0..10], "L898902C<<");
+        let d = parse_td3(l1, l2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_number_full.as_deref(), Some("L898902C31234"));
+        assert_eq!(d.full_document_number(), "L898902C31234");
+        // The 9-char field reading stays available and unsurprising.
+        assert_eq!(d.document_number, "L898902C");
+        assert_eq!(d.personal_number, None);
+    }
+
+    #[test]
+    fn overflow_coexists_with_personal_number() {
+        let fields = Td3Fields {
+            document_number: "AB1234567890".into(), // 12 chars
+            personal_number: Some("ZE184".into()),
+            ..Td3Fields::default()
+        };
+        let d = parse_td3_str(&format_td3(&fields));
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_number_full.as_deref(), Some("AB1234567890"));
+        assert_eq!(d.personal_number.as_deref(), Some("ZE184"));
+    }
+
+    #[test]
+    fn td2_and_td1_long_document_numbers_round_trip() {
+        let td2 = Td2Fields {
+            document_number: "D23145890XY".into(), // 11 chars; remainder fits 7
+            date_of_birth: "740812".into(),
+            date_of_expiry: "120415".into(),
+            ..Td2Fields::default()
+        };
+        let mrz = format_td2(&td2);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td2(l1, l2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_number_full.as_deref(), Some("D23145890XY"));
+
+        let td1 = Td1Fields {
+            document_number: "D23145890ABCDE".into(), // 14 chars; remainder fits 15
+            date_of_birth: "740812".into(),
+            date_of_expiry: "120415".into(),
+            ..Td1Fields::default()
+        };
+        let mrz = format_td1(&td1);
+        let mut lines = mrz.lines();
+        let d = parse_td1(
+            lines.next().unwrap(),
+            lines.next().unwrap(),
+            lines.next().unwrap(),
+        )
+        .unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_number_full.as_deref(), Some("D23145890ABCDE"));
+    }
+
+    #[test]
+    fn overflow_remainder_too_long_falls_back_to_truncation() {
+        // TD2's optional field is 7 wide, so a remainder of 6 + check + filler
+        // does not fit — the number is truncated to 9 as it always was, and the
+        // ordinary (non-overflow) encoding still validates.
+        let td2 = Td2Fields {
+            document_number: "D23145890ABCDEF".into(), // remainder 7 → needs 9
+            date_of_birth: "740812".into(),
+            date_of_expiry: "120415".into(),
+            ..Td2Fields::default()
+        };
+        let mrz = format_td2(&td2);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td2(l1, l2).unwrap();
+        assert!(d.valid(), "checks: {:?}", d.checks);
+        assert_eq!(d.document_number_full, None);
+        assert_eq!(d.document_number, "D23145890");
+    }
+
+    #[test]
+    fn tampered_overflow_remainder_fails_the_check_digit() {
+        let fields = Td3Fields {
+            document_number: "L898902C31234".into(),
+            ..Td3Fields::default()
+        };
+        let mrz = format_td3(&fields);
+        // Corrupt one character of the remainder in the personal-number field.
+        let tampered = mrz.replacen("31234", "31235", 1);
+        let d = parse_td3_str(&tampered);
+        assert!(!d.checks.document_number);
+        assert!(!d.valid());
+        assert!(d.checks.failed().contains(&Field::DocumentNumber));
+    }
+
+    #[test]
+    fn ordinary_specimens_report_no_overflow() {
+        assert_eq!(
+            parse_td3(TD3_L1, TD3_L2).unwrap().document_number_full,
+            None
+        );
+        assert_eq!(
+            parse_td1(TD1_L1, TD1_L2, TD1_L3)
+                .unwrap()
+                .document_number_full,
+            None
+        );
+        assert_eq!(
+            parse_td2(TD2_L1, TD2_L2).unwrap().document_number_full,
+            None
+        );
+        // Empty document-number field is a blank field, not an overflow.
+        let blank = "<<<<<<<<<<UTO7408122F1204159<<<<<<<<<<<<<<02";
+        assert_eq!(parse_td3(TD3_L1, blank).unwrap().document_number_full, None);
+    }
+
+    fn parse_td3_str(mrz: &str) -> MrzData {
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        parse_td3(l1, l2).unwrap()
+    }
+
+    // ---- ParseOptions ----
+
+    #[test]
+    fn pivot_is_configurable_per_call() {
+        // Birth dates land in the past relative to the pivot, expiry ahead.
+        let d = parse_td3(TD3_L1, TD3_L2).unwrap();
+        assert_eq!(d.date_of_birth, "1974-08-12");
+
+        // With a pivot of 80, YY=74 reads as 2074 rather than 1974.
+        let opts = ParseOptions { pivot_yy: 80 };
+        let d = parse_td3_with(TD3_L1, TD3_L2, &opts).unwrap();
+        assert_eq!(d.date_of_birth, "2074-08-12");
+        // Check digits are untouched by the pivot — it only affects display.
+        assert!(d.valid());
+    }
+
+    #[test]
+    fn default_options_match_the_plain_entry_points() {
+        let opts = ParseOptions::default();
+        assert_eq!(opts.pivot_yy, CURRENT_YY);
+        assert_eq!(
+            parse_td3(TD3_L1, TD3_L2).unwrap(),
+            parse_td3_with(TD3_L1, TD3_L2, &opts).unwrap()
+        );
+        let text = format!("## VISA\n\n{MRV_A_L1}\n{MRV_A_L2}\n");
+        assert_eq!(
+            find_and_parse(&text).unwrap(),
+            find_and_parse_with(&text, &opts).unwrap()
+        );
+    }
+
+    // ---- Checks diagnostics ----
+
+    #[test]
+    fn failed_lists_the_failing_fields() {
+        let clean = parse_td3(TD3_L1, TD3_L2).unwrap();
+        assert!(clean.checks.failed().is_empty());
+
+        let tampered = TD3_L2.replacen("740812", "750812", 1);
+        let d = parse_td3(TD3_L1, &tampered).unwrap();
+        assert_eq!(
+            d.checks.failed(),
+            vec![Field::DateOfBirth, Field::Composite]
+        );
+        assert_eq!(Field::DateOfBirth.to_string(), "date_of_birth");
+    }
+
+    #[test]
+    fn scanner_keeps_the_best_scoring_partial_read() {
+        // Two check digits wrong: the returned record must be the real zone
+        // with exactly those two flagged, not some worse-scoring variant.
+        let tampered = TD3_L2
+            .replacen("740812", "750812", 1)
+            .replacen("120415", "120416", 1);
+        let text = format!("noise\n\n{TD3_L1}\n{tampered}\n\nfooter");
+        let d = find_and_parse(&text).unwrap();
+        assert!(!d.valid());
+        assert_eq!(d.surname, "ERIKSSON");
+        assert_eq!(d.document_number, "L898902C3");
+        assert!(d.checks.document_number);
+        assert!(!d.checks.date_of_birth);
+        assert!(!d.checks.date_of_expiry);
     }
 
     #[test]

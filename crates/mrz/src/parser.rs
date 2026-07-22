@@ -9,8 +9,69 @@ use crate::checksum::{
     aggressive_defiller, char_value, defiller, digitize, fix_doc_code, fix_name_separator,
     is_mrz_charset, letterize, normalize_line, repair_positions, variants, verify,
 };
-use crate::dates::expand_date;
-use crate::{Checks, Format, MrzData, MrzError};
+use crate::dates::expand_date_with_pivot;
+use crate::{Checks, Format, MrzData, MrzError, ParseOptions};
+
+/// A document number that overflowed its 9-character field.
+struct Overflow {
+    /// First 8 printed characters plus the remainder read from the optional field.
+    full: String,
+    /// Whether the remainder's own check digit validates the reassembly.
+    check_ok: bool,
+    /// Characters of the optional field consumed by the overflow encoding
+    /// (remainder + its check digit + the terminating filler).
+    consumed: usize,
+}
+
+/// Decode the ICAO 9303 part 4 §4.2.2.2 long-document-number encoding.
+///
+/// When the number exceeds the 9-character field, the document is printed with
+/// its first 8 characters followed by a filler, the field's check-digit
+/// position set to a filler, and the *remainder* plus a check digit computed
+/// over the whole number written at the start of the optional/personal-number
+/// field, terminated by a filler.
+///
+/// Returns `None` when the zone does not carry that signature, in which case
+/// the caller keeps the ordinary fixed-width reading. MRV-A/MRV-B never use
+/// this — ICAO 9303 part 7 defines no overflow encoding.
+fn read_overflow(number_field: &str, check: char, optional: &str) -> Option<Overflow> {
+    if check != '<' || !number_field.ends_with('<') {
+        return None;
+    }
+    let head = number_field[0..8].trim_end_matches('<');
+    if head.is_empty() {
+        // A blank document-number field is a blank field, not an overflow.
+        return None;
+    }
+    // The remainder runs to the terminating filler and ends with its check digit.
+    let end = optional.find('<')?;
+    if end < 2 {
+        return None; // need at least one remainder character plus a check digit
+    }
+    let (remainder, check_digit) = optional[..end].split_at(end - 1);
+    let check_digit = check_digit.chars().next()?;
+    if !check_digit.is_ascii_digit() {
+        return None;
+    }
+    let full = format!("{head}{remainder}");
+    Some(Overflow {
+        check_ok: verify(&full, check_digit),
+        full,
+        consumed: end + 1,
+    })
+}
+
+/// Trim an optional-data field to what remains after any overflow encoding.
+fn optional_tail<'a>(optional: &'a str, overflow: &Option<Overflow>) -> &'a str {
+    match overflow {
+        Some(o) => optional[o.consumed..].trim_end_matches('<'),
+        None => optional.trim_end_matches('<'),
+    }
+}
+
+fn opt_string(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
 
 fn clean_name(field: &str) -> (String, String) {
     let trimmed = field.trim_end_matches('<');
@@ -41,6 +102,11 @@ fn ensure_charset(line: &str) -> Result<(), MrzError> {
 
 /// Parse a TD3 (passport) MRZ: two lines of exactly 44 characters.
 pub fn parse_td3(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    parse_td3_with(line1, line2, &ParseOptions::default())
+}
+
+/// [`parse_td3`] with an explicit [`ParseOptions`].
+pub fn parse_td3_with(line1: &str, line2: &str, opts: &ParseOptions) -> Result<MrzData, MrzError> {
     for line in [line1, line2] {
         if line.len() != 44 {
             return Err(MrzError::BadLength {
@@ -58,10 +124,14 @@ pub fn parse_td3(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
 
     let document_number = line2[0..9].trim_end_matches('<').to_string();
     let personal_raw = &line2[28..42];
-    let personal = personal_raw.trim_end_matches('<');
+    let overflow = read_overflow(&line2[0..9], line2.as_bytes()[9] as char, personal_raw);
+    let personal = optional_tail(personal_raw, &overflow);
 
     let checks = Checks {
-        document_number: verify(&line2[0..9], line2.as_bytes()[9] as char),
+        document_number: match &overflow {
+            Some(o) => o.check_ok,
+            None => verify(&line2[0..9], line2.as_bytes()[9] as char),
+        },
         date_of_birth: verify(&line2[13..19], line2.as_bytes()[19] as char),
         date_of_expiry: verify(&line2[21..27], line2.as_bytes()[27] as char),
         personal_number: verify(personal_raw, line2.as_bytes()[42] as char),
@@ -78,17 +148,14 @@ pub fn parse_td3(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
         document_type: line1[0..2].trim_end_matches('<').to_string(),
         issuing_country: line1[2..5].trim_end_matches('<').to_string(),
         document_number,
+        document_number_full: overflow.map(|o| o.full),
         surname,
         given_names,
         nationality: line2[10..13].trim_end_matches('<').to_string(),
-        date_of_birth: expand_date(&line2[13..19], true),
+        date_of_birth: expand_date_with_pivot(&line2[13..19], true, opts.pivot_yy),
         sex: clean_sex(line2.as_bytes()[20] as char),
-        date_of_expiry: expand_date(&line2[21..27], false),
-        personal_number: if personal.is_empty() {
-            None
-        } else {
-            Some(personal.to_string())
-        },
+        date_of_expiry: expand_date_with_pivot(&line2[21..27], false, opts.pivot_yy),
+        personal_number: opt_string(personal),
         mrz_lines: format!("{line1}\n{line2}"),
         checks,
     })
@@ -98,6 +165,11 @@ pub fn parse_td3(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
 /// Covers identity-card document codes (`I`/`A`/`C`); MRV-B visas share the
 /// geometry but lack a composite check digit and are not handled here.
 pub fn parse_td2(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    parse_td2_with(line1, line2, &ParseOptions::default())
+}
+
+/// [`parse_td2`] with an explicit [`ParseOptions`].
+pub fn parse_td2_with(line1: &str, line2: &str, opts: &ParseOptions) -> Result<MrzData, MrzError> {
     for line in [line1, line2] {
         if line.len() != 36 {
             return Err(MrzError::BadLength {
@@ -115,10 +187,15 @@ pub fn parse_td2(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
     let (surname, given_names) = clean_name(&line1[5..36]);
 
     let document_number = line2[0..9].trim_end_matches('<').to_string();
-    let optional = line2[28..35].trim_end_matches('<');
+    let optional_raw = &line2[28..35];
+    let overflow = read_overflow(&line2[0..9], line2.as_bytes()[9] as char, optional_raw);
+    let optional = optional_tail(optional_raw, &overflow);
 
     let checks = Checks {
-        document_number: verify(&line2[0..9], line2.as_bytes()[9] as char),
+        document_number: match &overflow {
+            Some(o) => o.check_ok,
+            None => verify(&line2[0..9], line2.as_bytes()[9] as char),
+        },
         date_of_birth: verify(&line2[13..19], line2.as_bytes()[19] as char),
         date_of_expiry: verify(&line2[21..27], line2.as_bytes()[27] as char),
         personal_number: true, // TD2 has no separate personal-number check digit
@@ -135,17 +212,14 @@ pub fn parse_td2(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
         document_type: code.to_string(),
         issuing_country: line1[2..5].trim_end_matches('<').to_string(),
         document_number,
+        document_number_full: overflow.map(|o| o.full),
         surname,
         given_names,
         nationality: line2[10..13].trim_end_matches('<').to_string(),
-        date_of_birth: expand_date(&line2[13..19], true),
+        date_of_birth: expand_date_with_pivot(&line2[13..19], true, opts.pivot_yy),
         sex: clean_sex(line2.as_bytes()[20] as char),
-        date_of_expiry: expand_date(&line2[21..27], false),
-        personal_number: if optional.is_empty() {
-            None
-        } else {
-            Some(optional.to_string())
-        },
+        date_of_expiry: expand_date_with_pivot(&line2[21..27], false, opts.pivot_yy),
+        personal_number: opt_string(optional),
         mrz_lines: format!("{line1}\n{line2}"),
         checks,
     })
@@ -153,6 +227,16 @@ pub fn parse_td2(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
 
 /// Parse a TD1 (ID card) MRZ: three lines of exactly 30 characters.
 pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzError> {
+    parse_td1_with(line1, line2, line3, &ParseOptions::default())
+}
+
+/// [`parse_td1`] with an explicit [`ParseOptions`].
+pub fn parse_td1_with(
+    line1: &str,
+    line2: &str,
+    line3: &str,
+    opts: &ParseOptions,
+) -> Result<MrzData, MrzError> {
     for line in [line1, line2, line3] {
         if line.len() != 30 {
             return Err(MrzError::BadLength {
@@ -169,7 +253,9 @@ pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzEr
 
     let (surname, given_names) = clean_name(line3);
 
-    let optional1 = line1[15..30].trim_end_matches('<');
+    let optional1_raw = &line1[15..30];
+    let overflow = read_overflow(&line1[5..14], line1.as_bytes()[14] as char, optional1_raw);
+    let optional1 = optional_tail(optional1_raw, &overflow);
     let optional2 = line2[18..29].trim_end_matches('<');
     let personal = [optional1, optional2]
         .iter()
@@ -179,7 +265,10 @@ pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzEr
         .join(" ");
 
     let checks = Checks {
-        document_number: verify(&line1[5..14], line1.as_bytes()[14] as char),
+        document_number: match &overflow {
+            Some(o) => o.check_ok,
+            None => verify(&line1[5..14], line1.as_bytes()[14] as char),
+        },
         date_of_birth: verify(&line2[0..6], line2.as_bytes()[6] as char),
         date_of_expiry: verify(&line2[8..14], line2.as_bytes()[14] as char),
         personal_number: true, // TD1 has no personal-number check digit
@@ -201,17 +290,14 @@ pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzEr
         document_type: code.to_string(),
         issuing_country: line1[2..5].trim_end_matches('<').to_string(),
         document_number: line1[5..14].trim_end_matches('<').to_string(),
+        document_number_full: overflow.map(|o| o.full),
         surname,
         given_names,
         nationality: line2[15..18].trim_end_matches('<').to_string(),
-        date_of_birth: expand_date(&line2[0..6], true),
+        date_of_birth: expand_date_with_pivot(&line2[0..6], true, opts.pivot_yy),
         sex: clean_sex(line2.as_bytes()[7] as char),
-        date_of_expiry: expand_date(&line2[8..14], false),
-        personal_number: if personal.is_empty() {
-            None
-        } else {
-            Some(personal)
-        },
+        date_of_expiry: expand_date_with_pivot(&line2[8..14], false, opts.pivot_yy),
+        personal_number: opt_string(&personal),
         mrz_lines: format!("{line1}\n{line2}\n{line3}"),
         checks,
     })
@@ -221,6 +307,15 @@ pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzEr
 /// (ICAO 9303 part 7). Geometry mirrors TD3 through the expiry check digit,
 /// but there is no personal-number field and no composite check digit.
 pub fn parse_mrv_a(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    parse_mrv_a_with(line1, line2, &ParseOptions::default())
+}
+
+/// [`parse_mrv_a`] with an explicit [`ParseOptions`].
+pub fn parse_mrv_a_with(
+    line1: &str,
+    line2: &str,
+    opts: &ParseOptions,
+) -> Result<MrzData, MrzError> {
     for line in [line1, line2] {
         if line.len() != 44 {
             return Err(MrzError::BadLength {
@@ -254,17 +349,15 @@ pub fn parse_mrv_a(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
         document_type: line1[0..2].trim_end_matches('<').to_string(),
         issuing_country: line1[2..5].trim_end_matches('<').to_string(),
         document_number,
+        // ICAO 9303 part 7 defines no overflow encoding for visas.
+        document_number_full: None,
         surname,
         given_names,
         nationality: line2[10..13].trim_end_matches('<').to_string(),
-        date_of_birth: expand_date(&line2[13..19], true),
+        date_of_birth: expand_date_with_pivot(&line2[13..19], true, opts.pivot_yy),
         sex: clean_sex(line2.as_bytes()[20] as char),
-        date_of_expiry: expand_date(&line2[21..27], false),
-        personal_number: if optional.is_empty() {
-            None
-        } else {
-            Some(optional.to_string())
-        },
+        date_of_expiry: expand_date_with_pivot(&line2[21..27], false, opts.pivot_yy),
+        personal_number: opt_string(optional),
         mrz_lines: format!("{line1}\n{line2}"),
         checks,
     })
@@ -274,6 +367,15 @@ pub fn parse_mrv_a(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
 /// (ICAO 9303 part 7). Geometry mirrors TD2 through the expiry check digit,
 /// but there is no personal-number field and no composite check digit.
 pub fn parse_mrv_b(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    parse_mrv_b_with(line1, line2, &ParseOptions::default())
+}
+
+/// [`parse_mrv_b`] with an explicit [`ParseOptions`].
+pub fn parse_mrv_b_with(
+    line1: &str,
+    line2: &str,
+    opts: &ParseOptions,
+) -> Result<MrzData, MrzError> {
     for line in [line1, line2] {
         if line.len() != 36 {
             return Err(MrzError::BadLength {
@@ -307,17 +409,15 @@ pub fn parse_mrv_b(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
         document_type: line1[0..2].trim_end_matches('<').to_string(),
         issuing_country: line1[2..5].trim_end_matches('<').to_string(),
         document_number,
+        // ICAO 9303 part 7 defines no overflow encoding for visas.
+        document_number_full: None,
         surname,
         given_names,
         nationality: line2[10..13].trim_end_matches('<').to_string(),
-        date_of_birth: expand_date(&line2[13..19], true),
+        date_of_birth: expand_date_with_pivot(&line2[13..19], true, opts.pivot_yy),
         sex: clean_sex(line2.as_bytes()[20] as char),
-        date_of_expiry: expand_date(&line2[21..27], false),
-        personal_number: if optional.is_empty() {
-            None
-        } else {
-            Some(optional.to_string())
-        },
+        date_of_expiry: expand_date_with_pivot(&line2[21..27], false, opts.pivot_yy),
+        personal_number: opt_string(optional),
         mrz_lines: format!("{line1}\n{line2}"),
         checks,
     })
@@ -462,7 +562,18 @@ fn repair_mrv_b_line2(l: &str) -> String {
 /// lines starting with `I`/`A`/`C`), then TD2 (two 36-char lines starting with
 /// `I`/`A`/`C`). Tolerates HTML-escaped fillers (`&lt;`, as produced by
 /// docling's Markdown) and MRZ lines merged onto a single physical line.
+///
+/// A reading whose check digits all validate is returned immediately. When no
+/// candidate fully validates, the *best-scoring* one — the reading with the
+/// most passing check digits — is returned with its honest (partially `false`)
+/// [`Checks`], so callers can see how close the read came and decide whether to
+/// escalate. [`MrzError::NotFound`] means nothing MRZ-shaped was found at all.
 pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
+    find_and_parse_with(text, &ParseOptions::default())
+}
+
+/// [`find_and_parse`] with an explicit [`ParseOptions`].
+pub fn find_and_parse_with(text: &str, opts: &ParseOptions) -> Result<MrzData, MrzError> {
     // Markdown/HTML pipelines escape the filler character.
     let text = text.replace("&lt;", "<");
     // OCR often emits several MRZ lines as ONE physical line, space-separated
@@ -478,14 +589,20 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
         }
     }
 
-    // First parseable-but-checksum-failed hit, reported when nothing better
-    // is found so callers can show which check digits failed.
+    // Best parseable-but-checksum-failed hit, reported when nothing fully
+    // validates so callers can see which check digits failed and how close the
+    // read came. Ties keep the earlier candidate: the repair pipeline emits its
+    // most conservative variants first, so the first reading at a given score
+    // is the one that assumed least about the OCR noise.
     let mut fallback: Option<MrzData> = None;
     let mut consider = |data: MrzData| -> Option<MrzData> {
         if data.valid() {
             return Some(data);
         }
-        fallback.get_or_insert(data);
+        match &fallback {
+            Some(best) if best.checks.score() >= data.checks.score() => {}
+            _ => fallback = Some(data),
+        }
         None
     };
 
@@ -498,7 +615,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             let tail = &merged[44..];
             for l1 in [repair_td3_line1(head), head.to_string()] {
                 for l2 in variants(tail, 44, repair_td3_line2) {
-                    if let Ok(data) = parse_td3(&l1, &l2) {
+                    if let Ok(data) = parse_td3_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -513,7 +630,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             }
             for l2_raw in lines.iter().skip(i + 1).take(3) {
                 for l2 in variants(l2_raw, 44, repair_td3_line2) {
-                    if let Ok(data) = parse_td3(&l1, &l2) {
+                    if let Ok(data) = parse_td3_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -537,7 +654,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             let tail = &merged[36..];
             for l1 in [repair_mrv_b_line1(head), head.to_string()] {
                 for l2 in variants(tail, 36, repair_mrv_b_line2) {
-                    if let Ok(data) = parse_mrv_b(&l1, &l2) {
+                    if let Ok(data) = parse_mrv_b_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -552,7 +669,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             }
             for l2_raw in lines.iter().skip(i + 1).take(3) {
                 for l2 in variants(l2_raw, 36, repair_mrv_b_line2) {
-                    if let Ok(data) = parse_mrv_b(&l1, &l2) {
+                    if let Ok(data) = parse_mrv_b_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -573,7 +690,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             let tail = &merged[44..];
             for l1 in [repair_mrv_a_line1(head), head.to_string()] {
                 for l2 in variants(tail, 44, repair_mrv_a_line2) {
-                    if let Ok(data) = parse_mrv_a(&l1, &l2) {
+                    if let Ok(data) = parse_mrv_a_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -588,7 +705,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             }
             for l2_raw in lines.iter().skip(i + 1).take(3) {
                 for l2 in variants(l2_raw, 44, repair_mrv_a_line2) {
-                    if let Ok(data) = parse_mrv_a(&l1, &l2) {
+                    if let Ok(data) = parse_mrv_a_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -606,7 +723,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             }
             for l2 in variants(lines[i + 1], 30, repair_td1_line2) {
                 for l3 in variants(lines[i + 2], 30, repair_td1_line3) {
-                    if let Ok(data) = parse_td1(&l1, &l2, &l3) {
+                    if let Ok(data) = parse_td1_with(&l1, &l2, &l3, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -628,7 +745,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
             let tail = &merged[36..];
             for l1 in [repair_td2_line1(head), head.to_string()] {
                 for l2 in variants(tail, 36, repair_td2_line2) {
-                    if let Ok(data) = parse_td2(&l1, &l2) {
+                    if let Ok(data) = parse_td2_with(&l1, &l2, opts) {
                         if let Some(valid) = consider(data) {
                             return Ok(valid);
                         }
@@ -643,7 +760,7 @@ pub fn find_and_parse(text: &str) -> Result<MrzData, MrzError> {
                 continue;
             }
             for l2 in variants(lines[i + 1], 36, repair_td2_line2) {
-                if let Ok(data) = parse_td2(&l1, &l2) {
+                if let Ok(data) = parse_td2_with(&l1, &l2, opts) {
                     if let Some(valid) = consider(data) {
                         return Ok(valid);
                     }

@@ -12,7 +12,10 @@
 //! panics — they say nothing about correctness (the existing unit tests in
 //! `src/lib.rs`/`src/parser.rs` already cover that against real specimens).
 
-use mrz::{find_and_parse, parse_mrv_a, parse_mrv_b, parse_td1, parse_td2, parse_td3};
+use mrz::{
+    find_and_parse, format_td1, format_td2, format_td3, parse_mrv_a, parse_mrv_b, parse_td1,
+    parse_td2, parse_td3, Td1Fields, Td2Fields, Td3Fields,
+};
 use proptest::prelude::*;
 
 /// The real MRZ charset plus the OCR-noise characters this crate's own unit
@@ -163,5 +166,107 @@ proptest! {
         l2 in prop::collection::vec(mrz_ish_char(), 44).prop_map(|c| c.into_iter().collect::<String>()),
     ) {
         let _ = parse_mrv_a(&l1, &l2);
+    }
+}
+
+/// A document number of arbitrary MRZ-charset length 1..=20 — the whole
+/// space this crate's overflow encoding (ICAO 9303 part 4 §4.2.2.2) has to
+/// handle: fits-as-printed (<=9), fits-via-overflow, and too-long-so-truncate.
+fn any_length_doc_number() -> impl Strategy<Value = String> {
+    "[A-Z0-9]{1,20}"
+}
+
+fn short_field_strategy() -> impl Strategy<Value = String> {
+    "[A-Z]{1,10}"
+}
+
+fn yymmdd_strategy() -> impl Strategy<Value = String> {
+    (0u32..100, 1u32..=12, 1u32..=28).prop_map(|(yy, mm, dd)| format!("{yy:02}{mm:02}{dd:02}"))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Unlike the panic-only properties above, this one asserts correctness:
+    /// whatever length the document number is, emit -> parse must validate,
+    /// and when overflow encoding kicks in `full_document_number()` must
+    /// recover the original input exactly. A "valid but wrong" reassembly
+    /// would be a silent corruption bug, worse than a rejected parse.
+    #[test]
+    fn td3_overflow_emit_parse_always_valid(
+        document_number in any_length_doc_number(),
+        surname in short_field_strategy(),
+        given_names in short_field_strategy(),
+        date_of_birth in yymmdd_strategy(),
+        date_of_expiry in yymmdd_strategy(),
+    ) {
+        let fields = Td3Fields {
+            document_number: document_number.clone(),
+            surname,
+            given_names,
+            date_of_birth,
+            date_of_expiry,
+            ..Td3Fields::default()
+        };
+        let mrz = format_td3(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td3(l1, l2).unwrap();
+        prop_assert!(d.valid(), "checks: {:?}", d.checks);
+        if d.document_number_full.is_some() {
+            prop_assert_eq!(d.full_document_number(), document_number.as_str());
+        }
+    }
+
+    #[test]
+    fn td2_overflow_emit_parse_always_valid(
+        document_number in any_length_doc_number(),
+        surname in short_field_strategy(),
+        given_names in short_field_strategy(),
+        date_of_birth in yymmdd_strategy(),
+        date_of_expiry in yymmdd_strategy(),
+    ) {
+        let fields = Td2Fields {
+            document_number: document_number.clone(),
+            surname,
+            given_names,
+            date_of_birth,
+            date_of_expiry,
+            ..Td2Fields::default()
+        };
+        let mrz = format_td2(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td2(l1, l2).unwrap();
+        prop_assert!(d.valid(), "checks: {:?}", d.checks);
+        if d.document_number_full.is_some() {
+            prop_assert_eq!(d.full_document_number(), document_number.as_str());
+        }
+    }
+
+    #[test]
+    fn td1_overflow_emit_parse_always_valid(
+        document_number in any_length_doc_number(),
+        surname in short_field_strategy(),
+        given_names in short_field_strategy(),
+        date_of_birth in yymmdd_strategy(),
+        date_of_expiry in yymmdd_strategy(),
+    ) {
+        let fields = Td1Fields {
+            document_number: document_number.clone(),
+            surname,
+            given_names,
+            date_of_birth,
+            date_of_expiry,
+            ..Td1Fields::default()
+        };
+        let mrz = format_td1(&fields);
+        let mut lines = mrz.lines();
+        let l1 = lines.next().unwrap();
+        let l2 = lines.next().unwrap();
+        let l3 = lines.next().unwrap();
+        let d = parse_td1(l1, l2, l3).unwrap();
+        prop_assert!(d.valid(), "checks: {:?}", d.checks);
+        if d.document_number_full.is_some() {
+            prop_assert_eq!(d.full_document_number(), document_number.as_str());
+        }
     }
 }

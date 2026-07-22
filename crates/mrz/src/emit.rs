@@ -126,6 +126,43 @@ fn name_field(surname: &str, given_names: &str, width: usize) -> String {
     field(&combined, width)
 }
 
+/// The 9-character document-number field, its check-digit character, and any
+/// prefix the overflow encoding forces onto the optional-data field.
+struct DocNumber {
+    field: String,
+    check: char,
+    /// Overflow prefix for the optional field: `remainder + check digit + '<'`.
+    /// Empty when the number fits its 9 characters.
+    optional_prefix: String,
+}
+
+/// Encode a document number, using the ICAO 9303 part 4 §4.2.2.2 overflow form
+/// when it exceeds 9 characters and the remainder fits `optional_width`.
+///
+/// The overflow form prints the first 8 characters plus a filler, sets the
+/// check-digit position to a filler, and writes `remainder + check digit over
+/// the whole number + a terminating filler` at the start of the optional field.
+/// If the remainder cannot fit, the number is truncated to 9 as before — this
+/// function never produces an over-long field.
+fn doc_number(number: &str, optional_width: usize) -> DocNumber {
+    let cleaned = clean(number);
+    let remainder_len = cleaned.len().saturating_sub(8);
+    if cleaned.len() > 9 && remainder_len + 2 <= optional_width {
+        let check = digit_char(&cleaned);
+        return DocNumber {
+            field: format!("{}<", &cleaned[0..8]),
+            check: '<',
+            optional_prefix: format!("{}{check}<", &cleaned[8..]),
+        };
+    }
+    let field = field(&cleaned, 9);
+    DocNumber {
+        check: digit_char(&field),
+        field,
+        optional_prefix: String::new(),
+    }
+}
+
 fn digit_char(field: &str) -> char {
     // `field` is always built from `clean`/`field`, i.e. only `[A-Z0-9<]`,
     // so `check_digit` can never fail here.
@@ -143,8 +180,11 @@ pub fn format_td3(fields: &Td3Fields) -> String {
     let name = name_field(&fields.surname, &fields.given_names, 39);
     let line1 = format!("{doc_code}{issuing}{name}");
 
-    let doc_num = field(&fields.document_number, 9);
-    let doc_num_check = digit_char(&doc_num);
+    let DocNumber {
+        field: doc_num,
+        check: doc_num_check,
+        optional_prefix,
+    } = doc_number(&fields.document_number, 14);
     let nationality = field(&fields.nationality, 3);
     let dob = field(&fields.date_of_birth, 6);
     let dob_check = digit_char(&dob);
@@ -155,7 +195,13 @@ pub fn format_td3(fields: &Td3Fields) -> String {
     };
     let expiry = field(&fields.date_of_expiry, 6);
     let expiry_check = digit_char(&expiry);
-    let personal = field(fields.personal_number.as_deref().unwrap_or(""), 14);
+    let personal = field(
+        &format!(
+            "{optional_prefix}{}",
+            clean(fields.personal_number.as_deref().unwrap_or(""))
+        ),
+        14,
+    );
     let personal_check = digit_char(&personal);
 
     // 43 chars: everything except the composite digit itself, in the same
@@ -242,8 +288,11 @@ pub fn format_td2(fields: &Td2Fields) -> String {
     let line1 = format!("{doc_code}{issuing}{name}");
     debug_assert_eq!(line1.len(), 36);
 
-    let doc_num = field(&fields.document_number, 9);
-    let doc_num_check = digit_char(&doc_num);
+    let DocNumber {
+        field: doc_num,
+        check: doc_num_check,
+        optional_prefix,
+    } = doc_number(&fields.document_number, 7);
     let nationality = field(&fields.nationality, 3);
     let dob = field(&fields.date_of_birth, 6);
     let dob_check = digit_char(&dob);
@@ -254,7 +303,13 @@ pub fn format_td2(fields: &Td2Fields) -> String {
     };
     let expiry = field(&fields.date_of_expiry, 6);
     let expiry_check = digit_char(&expiry);
-    let optional = field(fields.optional_data.as_deref().unwrap_or(""), 7);
+    let optional = field(
+        &format!(
+            "{optional_prefix}{}",
+            clean(fields.optional_data.as_deref().unwrap_or(""))
+        ),
+        7,
+    );
 
     // 35 chars: everything except the composite digit itself, in the same
     // layout `parser::parse_td2` expects (offsets 0..35).
@@ -339,9 +394,18 @@ impl Default for Td1Fields {
 pub fn format_td1(fields: &Td1Fields) -> String {
     let doc_code = field(&fields.document_code, 2);
     let issuing = field(&fields.issuing_country, 3);
-    let doc_num = field(&fields.document_number, 9);
-    let doc_num_check = digit_char(&doc_num);
-    let optional1 = field(fields.optional_data_1.as_deref().unwrap_or(""), 15);
+    let DocNumber {
+        field: doc_num,
+        check: doc_num_check,
+        optional_prefix,
+    } = doc_number(&fields.document_number, 15);
+    let optional1 = field(
+        &format!(
+            "{optional_prefix}{}",
+            clean(fields.optional_data_1.as_deref().unwrap_or(""))
+        ),
+        15,
+    );
     let line1 = format!("{doc_code}{issuing}{doc_num}{doc_num_check}{optional1}");
     debug_assert_eq!(line1.len(), 30);
 

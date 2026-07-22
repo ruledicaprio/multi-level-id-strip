@@ -7,6 +7,26 @@ use mrz::{
 };
 use proptest::prelude::*;
 
+// ---- ICAO 9303 part 4 §4.2.2.2 document-number overflow sweeps ----
+//
+// The overflow encoding fires when `document_number` exceeds the 9-char
+// field AND `remainder (len - 8) + check digit + terminating filler` fits
+// the format's optional-data field. `optional_width` below is that field's
+// width for each format (TD3 personal_number=14, TD2 optional_data=7, TD1
+// optional_data_1=15) — the same widths `src/emit.rs::doc_number` uses, so a
+// length overflows iff `len > 9 && len <= optional_width + 6`.
+fn overflows(len: usize, optional_width: usize) -> bool {
+    len > 9 && len <= optional_width + 6
+}
+
+/// A document number of exactly `len` MRZ-charset characters, letters and
+/// digits alternating so it isn't accidentally palindromic or degenerate.
+fn doc_number_of_len(len: usize) -> String {
+    (0..len)
+        .map(|i| if i % 2 == 0 { b'A' + (i as u8 % 26) } else { b'0' + (i as u8 % 10) } as char)
+        .collect()
+}
+
 // Official ICAO 9303 part 4 specimen (Utopia / Anna Maria Eriksson) — same
 // constants as the ones pinned in `src/lib.rs`'s test module.
 const TD3_L1: &str = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
@@ -515,4 +535,142 @@ proptest! {
         prop_assert_eq!(&parsed.nationality, &nationality);
         prop_assert_eq!(&parsed.sex, &sex);
     }
+}
+
+#[test]
+fn td3_document_number_length_sweep() {
+    // TD3's personal_number field is 14 wide: len > 9 && len <= 20 overflows;
+    // this sweep (9..=20) never reaches the truncation branch, so every
+    // length past 9 must reassemble exactly.
+    for len in 9..=20 {
+        let document_number = doc_number_of_len(len);
+        let fields = Td3Fields {
+            document_number: document_number.clone(),
+            date_of_birth: "740812".to_string(),
+            date_of_expiry: "120415".to_string(),
+            ..Td3Fields::default()
+        };
+        let mrz = format_td3(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td3(l1, l2).unwrap();
+        assert!(d.valid(), "len {len}: checks {:?}", d.checks);
+
+        if overflows(len, 14) {
+            assert_eq!(
+                d.document_number_full.as_deref(),
+                Some(document_number.as_str()),
+                "len {len}"
+            );
+            assert_eq!(d.full_document_number(), document_number, "len {len}");
+        } else {
+            assert_eq!(d.document_number_full, None, "len {len}");
+            assert_eq!(d.document_number, &document_number[0..9], "len {len}");
+        }
+    }
+}
+
+#[test]
+fn td2_document_number_length_sweep() {
+    // TD2's optional_data field is only 7 wide: len > 9 && len <= 13
+    // overflows; len 14..=20 falls back to truncation — this sweep exercises
+    // both branches within a single format, not just the fits-forever case.
+    for len in 9..=20 {
+        let document_number = doc_number_of_len(len);
+        let fields = Td2Fields {
+            document_number: document_number.clone(),
+            date_of_birth: "740812".to_string(),
+            date_of_expiry: "120415".to_string(),
+            ..Td2Fields::default()
+        };
+        let mrz = format_td2(&fields);
+        let (l1, l2) = mrz.split_once('\n').unwrap();
+        let d = parse_td2(l1, l2).unwrap();
+        assert!(d.valid(), "len {len}: checks {:?}", d.checks);
+
+        if overflows(len, 7) {
+            assert_eq!(
+                d.document_number_full.as_deref(),
+                Some(document_number.as_str()),
+                "len {len}"
+            );
+        } else {
+            assert_eq!(d.document_number_full, None, "len {len}");
+            assert_eq!(d.document_number, &document_number[0..9], "len {len}");
+        }
+    }
+}
+
+#[test]
+fn td1_document_number_length_sweep() {
+    // TD1's optional_data_1 field is 15 wide: len > 9 && len <= 21 overflows,
+    // so (like TD3) this 9..=20 sweep never reaches the truncation branch.
+    for len in 9..=20 {
+        let document_number = doc_number_of_len(len);
+        let fields = Td1Fields {
+            document_number: document_number.clone(),
+            date_of_birth: "740812".to_string(),
+            date_of_expiry: "120415".to_string(),
+            ..Td1Fields::default()
+        };
+        let mrz = format_td1(&fields);
+        let mut lines = mrz.lines();
+        let l1 = lines.next().unwrap();
+        let l2 = lines.next().unwrap();
+        let l3 = lines.next().unwrap();
+        let d = parse_td1(l1, l2, l3).unwrap();
+        assert!(d.valid(), "len {len}: checks {:?}", d.checks);
+
+        if overflows(len, 15) {
+            assert_eq!(
+                d.document_number_full.as_deref(),
+                Some(document_number.as_str()),
+                "len {len}"
+            );
+        } else {
+            assert_eq!(d.document_number_full, None, "len {len}");
+            assert_eq!(d.document_number, &document_number[0..9], "len {len}");
+        }
+    }
+}
+
+#[test]
+fn overflow_coexists_with_nonempty_optional_data_td2_td1() {
+    // Overflow writes `remainder + check + filler` at the START of the
+    // optional field; any caller-supplied optional data must survive
+    // concatenated right after that prefix, not get clobbered by it.
+    let td2 = Td2Fields {
+        document_number: "D2314589012".to_string(), // 11 chars, remainder 3 fits width 7
+        date_of_birth: "740812".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data: Some("XY".to_string()),
+        ..Td2Fields::default()
+    };
+    let mrz = format_td2(&td2);
+    let (l1, l2) = mrz.split_once('\n').unwrap();
+    let d = parse_td2(l1, l2).unwrap();
+    assert!(d.valid(), "checks: {:?}", d.checks);
+    assert_eq!(d.document_number_full.as_deref(), Some("D2314589012"));
+    // The overflow prefix (remainder + check + filler) occupies the front of
+    // the optional field; the caller-supplied "XY" must survive right after
+    // it rather than being overwritten or absorbed into the remainder.
+    assert_eq!(d.personal_number.as_deref(), Some("XY"));
+
+    let td1 = Td1Fields {
+        document_number: "D231458901234".to_string(), // 13 chars, remainder 5 fits width 15
+        date_of_birth: "740812".to_string(),
+        date_of_expiry: "120415".to_string(),
+        optional_data_1: Some("ZZZ".to_string()),
+        ..Td1Fields::default()
+    };
+    let mrz = format_td1(&td1);
+    let mut lines = mrz.lines();
+    let l1 = lines.next().unwrap();
+    let l2 = lines.next().unwrap();
+    let l3 = lines.next().unwrap();
+    let d = parse_td1(l1, l2, l3).unwrap();
+    assert!(d.valid(), "checks: {:?}", d.checks);
+    assert_eq!(d.document_number_full.as_deref(), Some("D231458901234"));
+    // optional_data_1's overflow prefix and "ZZZ" join as `personal_number`
+    // (optional_data_2 is empty here, so no " " separator survives).
+    assert_eq!(d.personal_number.as_deref(), Some("ZZZ"));
 }
