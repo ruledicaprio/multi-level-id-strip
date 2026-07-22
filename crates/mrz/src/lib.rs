@@ -13,6 +13,7 @@
 //!
 //! The engine is split across (private) modules:
 //! - `checksum` — check-digit math and generic OCR-repair primitives
+//! - `blindspot` — the substitutions check digits provably cannot catch
 //! - `parser` — the TD1/TD2/TD3 parsers and the free-text scanner
 //! - `dates` — `YYMMDD` expansion and date-plausibility checks
 //! - `countries` — ICAO/ISO 3166-1 code → country name
@@ -34,12 +35,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "zeroize")]
 use zeroize::ZeroizeOnDrop;
 
+mod blindspot;
 mod checksum;
 mod countries;
 mod dates;
 mod emit;
 mod parser;
 
+pub use blindspot::{blindspot, class_of, collisions, Blindspot, CLASSES};
 pub use checksum::{check_digit, verify};
 pub use countries::{code_for_name, country_name};
 pub use dates::{expand_date, expand_date_with_pivot, Date, DateValidity, CURRENT_YY};
