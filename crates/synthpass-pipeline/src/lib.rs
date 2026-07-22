@@ -836,6 +836,8 @@ fn extraction_v2_from_mrz(m: &mrz::MrzData) -> ExtractionV2 {
         mrz::Format::Td1 => MrzFormat::Td1,
         mrz::Format::Td2 => MrzFormat::Td2,
         mrz::Format::Td3 => MrzFormat::Td3,
+        mrz::Format::MrvA => MrzFormat::MrvA,
+        mrz::Format::MrvB => MrzFormat::MrvB,
     };
     let mut v2 = ExtractionV2::from(extraction_from_mrz(m));
     v2.document.mrz_format = Some(format);
