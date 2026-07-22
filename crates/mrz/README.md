@@ -24,8 +24,39 @@ The core crate has **no runtime dependencies** and compiles to
 | MRV-A  | Visas (passport-book)             | 2 lines × 44      | ✅ parse + emit |
 | MRV-B  | Visas (smaller)                   | 2 lines × 36      | ✅ parse + emit |
 
-Document-number overflow (numbers longer than the 9-character field) is a
-known gap tracked for a later release.
+Document-number overflow (ICAO 9303 part 4 §4.2.2.2) is supported for TD1/TD2/
+TD3: when a document number is longer than the 9-character field, `format_td3`
+/ `format_td2` / `format_td1` reassemble it automatically as long as the
+remainder fits the format's optional-data field (TD3 personal number, 14
+chars; TD2/TD1 optional data, 7/15 chars), and the parser reads it back into
+`MrzData::document_number_full`:
+
+```rust
+use mrz::{format_td3, Td3Fields};
+
+let lines = format_td3(&Td3Fields {
+    issuing_country: "UTO".into(),
+    document_number: "L898902C31234".into(), // 13 chars, overflows the 9-char field
+    surname: "ERIKSSON".into(),
+    given_names: "ANNA MARIA".into(),
+    nationality: "UTO".into(),
+    date_of_birth: "740812".into(),
+    sex: "F".into(),
+    date_of_expiry: "120415".into(),
+    ..Default::default()
+});
+
+let (l1, l2) = lines.split_once('\n').unwrap();
+let doc = mrz::parse_td3(l1, l2).unwrap();
+assert!(doc.valid());
+assert_eq!(doc.document_number, "L898902C"); // the printed 9-char field
+assert_eq!(doc.full_document_number(), "L898902C31234"); // the reassembled number
+```
+
+When the remainder doesn't fit the optional field, the number still truncates
+to 9 characters as before (unchanged, pre-existing behavior). MRV-A/MRV-B
+visas have no overflow encoding in ICAO 9303 part 7, so this only applies to
+TD1/TD2/TD3.
 
 ## Usage
 
@@ -33,7 +64,7 @@ Add it to `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrz = "0.3"
+mrz = "0.4"
 ```
 
 ### Scan free-form OCR text
@@ -123,11 +154,22 @@ consistent. That separate, non-cryptographic judgement is
 `MrzData::validity(today)`:
 
 ```rust
-use mrz::Date;
+use mrz::{parse_td3, Date};
+
+// The ICAO 9303 part 4 specimen: expires 2012-04-15.
+let doc = parse_td3(
+    "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
+    "L898902C36UTO7408122F1204159ZE184226B<<<<<10",
+)
+.unwrap();
+assert!(doc.valid()); // the read is checksum-proven ...
 
 let report = doc.validity(Date::new(2010, 1, 1));
-assert!(report.in_date);
+assert!(report.in_date); // ... and, as of 2010, still in date
 assert!(report.dob_before_expiry);
+
+// The same faithful read, judged against a later day: still valid(), expired.
+assert!(!doc.validity(Date::new(2020, 1, 1)).in_date);
 ```
 
 ## Feature flags

@@ -157,13 +157,25 @@ pub(crate) fn fix_name_separator(s: &str) -> String {
     s.to_string()
 }
 
-/// Last-resort variant: any `K`/`L` touching a `<` becomes `<` (to fixpoint).
+/// Hard bound on [`aggressive_defiller`]'s convergence loop.
+///
+/// Each pass that changes anything converts at least one `K`/`L` to `<` and
+/// never converts back, so the loop provably terminates within `s.len() + 1`
+/// passes; MRZ lines are at most 44 characters. The bound is belt-and-braces
+/// against a future rule that could reintroduce characters — it makes
+/// termination a property of the code rather than of the argument above it.
+pub(crate) const MAX_DEFILL_PASSES: usize = 64;
+
+/// Last-resort variant: any `K`/`L` touching a `<` becomes `<` (to fixpoint,
+/// or [`MAX_DEFILL_PASSES`], whichever comes first).
 /// Only ever accepted when the composite check digit validates the result.
 pub(crate) fn aggressive_defiller(s: &str) -> String {
     let mut b: Vec<u8> = s.bytes().collect();
     let mut changed = true;
-    while changed {
+    let mut passes = 0;
+    while changed && passes < MAX_DEFILL_PASSES {
         changed = false;
+        passes += 1;
         for i in 0..b.len() {
             if matches!(b[i], b'K' | b'L')
                 && ((i > 0 && b[i - 1] == b'<') || (i + 1 < b.len() && b[i + 1] == b'<'))
@@ -274,6 +286,19 @@ mod tests {
         assert_eq!(check_digit("740812").unwrap(), 2);
         assert_eq!(check_digit("120415").unwrap(), 9);
         assert_eq!(check_digit("ZE184226B<<<<<").unwrap(), 1);
+    }
+
+    #[test]
+    fn aggressive_defiller_terminates_on_adversarial_runs() {
+        // Worst case for the convergence loop: a solid K/L run anchored by a
+        // single filler at one end, so each pass can only eat one character.
+        let s = format!("<{}", "KL".repeat(21)); // 43 chars, one seed filler
+        assert_eq!(aggressive_defiller(&s), "<".repeat(43));
+        // No filler to seed from: nothing is touched, and it still returns.
+        let untouched = "KLKLKLKLKL";
+        assert_eq!(aggressive_defiller(untouched), untouched);
+        // Length is always preserved.
+        assert_eq!(aggressive_defiller("AB<KL<CD").len(), 8);
     }
 
     #[test]
