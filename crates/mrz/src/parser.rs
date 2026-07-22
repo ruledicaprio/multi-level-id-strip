@@ -217,6 +217,112 @@ pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzEr
     })
 }
 
+/// Parse an MRV-A machine readable visa: two lines of exactly 44 characters
+/// (ICAO 9303 part 7). Geometry mirrors TD3 through the expiry check digit,
+/// but there is no personal-number field and no composite check digit.
+pub fn parse_mrv_a(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    for line in [line1, line2] {
+        if line.len() != 44 {
+            return Err(MrzError::BadLength {
+                expected: 44,
+                got: line.len(),
+            });
+        }
+        ensure_charset(line)?;
+    }
+    if !line1.starts_with('V') {
+        return Err(MrzError::BadDocumentCode(line1[0..2].to_string()));
+    }
+
+    let (surname, given_names) = clean_name(&line1[5..44]);
+
+    let document_number = line2[0..9].trim_end_matches('<').to_string();
+    let optional = line2[28..44].trim_end_matches('<');
+
+    let checks = Checks {
+        document_number: verify(&line2[0..9], line2.as_bytes()[9] as char),
+        date_of_birth: verify(&line2[13..19], line2.as_bytes()[19] as char),
+        date_of_expiry: verify(&line2[21..27], line2.as_bytes()[27] as char),
+        // MRV-A has no personal-number or composite check digit at all;
+        // vacuously true, same convention TD1/TD2 use for personal_number.
+        personal_number: true,
+        composite: true,
+    };
+
+    Ok(MrzData {
+        format: Format::MrvA,
+        document_type: line1[0..2].trim_end_matches('<').to_string(),
+        issuing_country: line1[2..5].trim_end_matches('<').to_string(),
+        document_number,
+        surname,
+        given_names,
+        nationality: line2[10..13].trim_end_matches('<').to_string(),
+        date_of_birth: expand_date(&line2[13..19], true),
+        sex: clean_sex(line2.as_bytes()[20] as char),
+        date_of_expiry: expand_date(&line2[21..27], false),
+        personal_number: if optional.is_empty() {
+            None
+        } else {
+            Some(optional.to_string())
+        },
+        mrz_lines: format!("{line1}\n{line2}"),
+        checks,
+    })
+}
+
+/// Parse an MRV-B machine readable visa: two lines of exactly 36 characters
+/// (ICAO 9303 part 7). Geometry mirrors TD2 through the expiry check digit,
+/// but there is no personal-number field and no composite check digit.
+pub fn parse_mrv_b(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
+    for line in [line1, line2] {
+        if line.len() != 36 {
+            return Err(MrzError::BadLength {
+                expected: 36,
+                got: line.len(),
+            });
+        }
+        ensure_charset(line)?;
+    }
+    if !line1.starts_with('V') {
+        return Err(MrzError::BadDocumentCode(line1[0..2].to_string()));
+    }
+
+    let (surname, given_names) = clean_name(&line1[5..36]);
+
+    let document_number = line2[0..9].trim_end_matches('<').to_string();
+    let optional = line2[28..36].trim_end_matches('<');
+
+    let checks = Checks {
+        document_number: verify(&line2[0..9], line2.as_bytes()[9] as char),
+        date_of_birth: verify(&line2[13..19], line2.as_bytes()[19] as char),
+        date_of_expiry: verify(&line2[21..27], line2.as_bytes()[27] as char),
+        // MRV-B has no personal-number or composite check digit at all;
+        // vacuously true, same convention TD1/TD2 use for personal_number.
+        personal_number: true,
+        composite: true,
+    };
+
+    Ok(MrzData {
+        format: Format::MrvB,
+        document_type: line1[0..2].trim_end_matches('<').to_string(),
+        issuing_country: line1[2..5].trim_end_matches('<').to_string(),
+        document_number,
+        surname,
+        given_names,
+        nationality: line2[10..13].trim_end_matches('<').to_string(),
+        date_of_birth: expand_date(&line2[13..19], true),
+        sex: clean_sex(line2.as_bytes()[20] as char),
+        date_of_expiry: expand_date(&line2[21..27], false),
+        personal_number: if optional.is_empty() {
+            None
+        } else {
+            Some(optional.to_string())
+        },
+        mrz_lines: format!("{line1}\n{line2}"),
+        checks,
+    })
+}
+
 fn repair_td3_line1(l: &str) -> String {
     // Issuing state must be letters; the name field suffers filler misreads.
     let l = fix_doc_code(&repair_positions(l, &[(2..5, letterize)]));

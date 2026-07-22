@@ -1,10 +1,9 @@
 [package]
 name = "mrz"
-# Decoupled from the workspace `1.1.0`: this is the crate's first *public*
-# release and the API still has documented gaps (MRV visas, document-number
-# overflow), so 0.x signals that honestly rather than inheriting the repo's
-# internal version.
-version = "0.1.0"
+# Decoupled from the workspace `1.1.0`: independent public-release line. 0.x
+# still signals documented gaps (MRV emission, document-number overflow) that
+# a 1.0 would imply are closed.
+version = "0.2.0"
 edition.workspace = true
 description = "Zero-dependency ICAO 9303 Machine Readable Zone (MRZ) parser and check-digit validator for TD1/TD2/TD3 documents."
 license = "MIT"

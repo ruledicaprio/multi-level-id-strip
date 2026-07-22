@@ -184,13 +184,16 @@ pub enum DocumentKind {
 }
 
 /// ICAO 9303 MRZ formats: TD3 (passports, 2×44), TD2 (official travel
-/// documents, 2×36), TD1 (ID cards, 3×30).
+/// documents, 2×36), TD1 (ID cards, 3×30), and the two machine readable visa
+/// formats MRV-A (2×44) and MRV-B (2×36).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MrzFormat {
     Td1,
     Td2,
     Td3,
+    MrvA,
+    MrvB,
 }
 
 impl MrzFormat {
