@@ -16,7 +16,12 @@ pub(crate) fn char_value(c: char) -> Result<u32, MrzError> {
     }
 }
 
-/// Compute the ICAO 9303 check digit (7-3-1 repeating weights, mod 10).
+/// Compute the ICAO 9303 check digit (part 3 §4.9: 7-3-1 repeating weights,
+/// mod 10).
+///
+/// The `mod 10` is what makes the oracle exact *and* bounded — see
+/// [`Blindspot`](crate::Blindspot) for the substitutions it provably cannot
+/// catch.
 pub fn check_digit(field: &str) -> Result<u32, MrzError> {
     const WEIGHTS: [u32; 3] = [7, 3, 1];
     let mut sum = 0u32;

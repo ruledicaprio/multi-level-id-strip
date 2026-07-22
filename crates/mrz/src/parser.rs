@@ -100,7 +100,8 @@ fn ensure_charset(line: &str) -> Result<(), MrzError> {
     Ok(())
 }
 
-/// Parse a TD3 (passport) MRZ: two lines of exactly 44 characters.
+/// Parse a TD3 (passport) MRZ: two lines of exactly 44 characters
+/// (ICAO 9303 part 4 §4.2.2; document-number overflow is §4.2.2.2).
 pub fn parse_td3(line1: &str, line2: &str) -> Result<MrzData, MrzError> {
     parse_td3_with(line1, line2, &ParseOptions::default())
 }
@@ -225,7 +226,8 @@ pub fn parse_td2_with(line1: &str, line2: &str, opts: &ParseOptions) -> Result<M
     })
 }
 
-/// Parse a TD1 (ID card) MRZ: three lines of exactly 30 characters.
+/// Parse a TD1 (ID card) MRZ: three lines of exactly 30 characters
+/// (ICAO 9303 part 5).
 pub fn parse_td1(line1: &str, line2: &str, line3: &str) -> Result<MrzData, MrzError> {
     parse_td1_with(line1, line2, line3, &ParseOptions::default())
 }

@@ -1,5 +1,10 @@
 # mrz
 
+[![crates.io](https://img.shields.io/crates/v/mrz.svg)](https://crates.io/crates/mrz)
+[![docs.rs](https://docs.rs/mrz/badge.svg)](https://docs.rs/mrz)
+[![MSRV](https://img.shields.io/badge/MSRV-1.82-blue.svg)](#minimum-supported-rust-version)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
+
 A zero-dependency [ICAO 9303](https://www.icao.int/publications/pages/publication.aspx?docnum=9303)
 Machine Readable Zone (MRZ) parser and check-digit validator for Rust.
 
@@ -58,14 +63,37 @@ to 9 characters as before (unchanged, pre-existing behavior). MRV-A/MRV-B
 visas have no overflow encoding in ICAO 9303 part 7, so this only applies to
 TD1/TD2/TD3.
 
+### Compared to other Rust MRZ crates
+
+The closest published alternative is [`mrtd`](https://docs.rs/mrtd). Verified
+against its docs.rs page at the time of writing:
+
+|                            | `mrz`                     | `mrtd`             |
+| -------------------------- | ------------------------- | ------------------ |
+| Zero-dependency core       | ✅                        | ❌ chrono, regex, lazy_static |
+| Emit (format) MRZ lines    | ✅ all five formats       | ❌ parse only      |
+| MRV-A / MRV-B visas        | ✅                        | ❌                 |
+| Document-number overflow   | ✅ TD1/TD2/TD3            | ❌                 |
+| OCR repair heuristics      | ✅ checksum-guided        | ❌                 |
+| `wasm32-unknown-unknown`   | ✅ default build          | not documented     |
+
 ## Usage
 
 Add it to `Cargo.toml`:
 
 ```toml
 [dependencies]
-mrz = "0.4"
+mrz = "0.5"
 ```
+
+### Minimum supported Rust version
+
+**1.82.** The floor is set by `std::iter::repeat_n` and `Option::is_none_or`
+in the OCR repair helpers, both stabilized in that release. It applies to the
+zero-dependency default build and is enforced by CI on every push; the
+optional `serde`/`zeroize` features and the dev-dependency test suite follow
+their own upstream MSRVs, which are higher. The MSRV is a floor, not a pin —
+raising it is a minor version bump.
 
 ### Scan free-form OCR text
 
@@ -171,6 +199,51 @@ assert!(report.dob_before_expiry);
 // The same faithful read, judged against a later day: still valid(), expired.
 assert!(!doc.validity(Date::new(2020, 1, 1)).in_date);
 ```
+
+## What check digits cannot prove
+
+The same honest-limits argument, applied to characters rather than dates. A
+check digit is a 7-3-1 weighted sum taken **mod 10** (ICAO 9303 part 3 §4.9),
+so it sees only each character's value mod 10. Two characters are
+indistinguishable to *every* check digit exactly when their values are
+congruent mod 10 — and `blindspot` states that outright:
+
+```rust
+use mrz::{blindspot, collisions, Blindspot};
+
+// The OCR confusion everyone worries about is CAUGHT ...
+assert!(matches!(blindspot('O', '0'), Blindspot::Caught { delta_mod10: 4 }));
+// ... and the quiet one nobody mentions is not.
+assert!(blindspot('K', '<').is_blind());
+
+// The complete blind set for a character, not a sample of it.
+assert_eq!(collisions('K'), vec!['0', 'A', 'U', '<']);
+```
+
+That inversion is the point:
+
+| Pair    | Verdict    | Why                         |
+| ------- | ---------- | --------------------------- |
+| O ↔ 0   | **caught** | 24 vs 0 — differ mod 10     |
+| I ↔ 1   | **caught** | 18 vs 1                     |
+| B ↔ 8   | **caught** | 11 vs 8                     |
+| S ↔ 5   | **caught** | 28 vs 5                     |
+| Z ↔ 2   | **caught** | 35 vs 2                     |
+| K ↔ `<` | **blind**  | 20 vs 0 — congruent mod 10  |
+| I ↔ S   | **blind**  | 18 vs 28                    |
+| B ↔ L   | **blind**  | 11 vs 21                    |
+| A ↔ K   | **blind**  | 10 vs 20                    |
+
+`mrz::CLASSES` is the whole atlas: ten residue classes partitioning the
+37-character alphabet. Class 0 is `0 A K U <` — five members, because the
+filler and the digit zero share a value. Any substitution *within* a row is
+provably undetectable; any substitution *across* rows is caught. This is
+precisely why the crate layers structural guards on top of the arithmetic
+(recognized country codes, date plausibility, name charset).
+
+`cargo run -p mrz --example checksum_blindspots` demonstrates the law
+empirically — it mutates the ICAO specimen character by character and asks the
+real parser, rather than asserting the algebra at you.
 
 ## Feature flags
 

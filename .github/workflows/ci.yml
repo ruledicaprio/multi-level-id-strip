@@ -114,6 +114,21 @@ jobs:
           cargo check -p synthpass-license
           cargo check -p synthpass-license --features vendor
 
+  # `mrz` is the published crate, so its stated MSRV has to be enforced rather
+  # than asserted. Modeled on `rust-portable` (lightweight) rather than the
+  # `rust` job: no OCR model downloads, no system dependencies. The gate is the
+  # zero-dependency default build — the crate's own source, and the thing the
+  # `rust-version` in crates/mrz/Cargo.toml actually promises.
+  msrv:
+    name: mrz MSRV (1.82)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Zero-dependency build on the declared MSRV
+        run: cargo check -p mrz --no-default-features
+
   # Cross-platform proof: `synthpass-ocr` (ocrs/rten) builds and tests here with
   # no system OCR libraries at all — the "zero Docker/Python, genuinely pure
   # Rust" claim, exercised on macOS on every push.

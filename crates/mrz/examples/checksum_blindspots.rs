@@ -15,9 +15,15 @@
 //! (K↔<, I↔S, B↔L) slip straight through. Knowing which is which is exactly
 //! the kind of limit a validation library should be able to state out loud.
 //!
+//! Since 0.5.0 the law this example demonstrates is a first-class API —
+//! `mrz::blindspot`, `mrz::collisions`, `mrz::CLASSES` — and sections 2 and 3
+//! below call it rather than doing their own arithmetic. Section 1 still
+//! mutates the specimen and asks the real parser, so the example doubles as a
+//! live cross-check that the algebra agrees with the engine.
+//!
 //! Run: `cargo run -p mrz --example checksum_blindspots`
 
-use mrz::parse_td3;
+use mrz::{blindspot, parse_td3, Blindspot, CLASSES};
 
 // Official ICAO 9303 Part 4 specimen (Utopia / Anna Maria Eriksson) — every
 // check digit valid.
@@ -26,14 +32,12 @@ const L2: &str = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
 
 const CHARSET: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<";
 
-/// ICAO 9303 character value: `0-9 → 0-9`, `A-Z → 10-35`, `< → 0`.
-fn value(c: char) -> i32 {
-    match c {
-        '0'..='9' => c as i32 - '0' as i32,
-        'A'..='Z' => c as i32 - 'A' as i32 + 10,
-        '<' => 0,
-        _ => -1,
-    }
+/// Which of the ten residue classes `c` falls in, via the public table.
+fn residue(c: char) -> usize {
+    CLASSES
+        .iter()
+        .position(|class| class.contains(&c))
+        .expect("MRZ alphabet character")
 }
 
 /// Substitute a single byte of line 2 and ask the real parser whether the
@@ -59,8 +63,8 @@ fn main() {
     let pos = 0;
     let orig = L2.as_bytes()[pos] as char;
     println!(
-        "=== single-character sweep at line2[{pos}] (document number, printed '{orig}', value {}) ===",
-        value(orig)
+        "=== single-character sweep at line2[{pos}] (document number, printed '{orig}', class ≡{}) ===",
+        residue(orig)
     );
     let mut blind = Vec::new();
     let mut caught = 0;
@@ -78,15 +82,23 @@ fn main() {
         "  BLIND  (checksum cannot distinguish from '{orig}'): {}",
         blind
             .iter()
-            .map(|c| format!("{c}(v{})", value(*c)))
+            .map(|c| c.to_string())
             .collect::<Vec<_>>()
             .join("  ")
     );
     println!("  CAUGHT (checksum flips valid()→false):        {caught} of the other 35 chars");
+    // The empirical blind set the parser just produced must be exactly what
+    // the public API predicts — the whole point of promoting it to an API.
+    assert_eq!(
+        blind,
+        mrz::collisions(orig),
+        "the parser and mrz::collisions must agree"
+    );
     println!(
         "  → every BLIND char has value ≡ {} (mod 10), same as '{orig}'. That is the entire\n    \
-         blind set, and it is exactly one residue class — nothing more slips through.\n",
-        value(orig).rem_euclid(10)
+         blind set, and it is exactly one residue class — nothing more slips through.\n    \
+         mrz::collisions('{orig}') returns precisely this set.\n",
+        residue(orig)
     );
 
     // 2) The counterintuitive part: real-world OCR confusion pairs, classified
@@ -107,20 +119,19 @@ fn main() {
     ];
     println!("  pair      Δ mod10  verdict   note");
     for (a, b, note) in pairs {
-        let delta = (value(a) - value(b)).rem_euclid(10);
-        let verdict = if delta == 0 { "BLIND" } else { "caught" };
+        let (delta, verdict) = match blindspot(a, b) {
+            Blindspot::Blind { .. } => (0, "BLIND"),
+            Blindspot::Caught { delta_mod10 } => (delta_mod10, "caught"),
+            _ => unreachable!("all pairs are distinct MRZ characters"),
+        };
         println!("  {a} ↔ {b}      {delta:<8} {verdict:<9} {note}");
     }
 
     // 3) The full residue-class partition of the MRZ alphabet — the complete
     //    atlas of what a check digit can never separate.
     println!("\n=== the 10 collision classes (a check digit sees only value mod 10) ===");
-    for r in 0..10 {
-        let members: Vec<String> = CHARSET
-            .chars()
-            .filter(|c| value(*c).rem_euclid(10) == r && value(*c) >= 0)
-            .map(|c| c.to_string())
-            .collect();
+    for (r, class) in CLASSES.iter().enumerate() {
+        let members: Vec<String> = class.iter().map(|c| c.to_string()).collect();
         println!("  ≡{r}: {}", members.join(" "));
     }
     println!(
