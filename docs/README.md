@@ -12,8 +12,6 @@ that's too long-form for there.
   this one wins.
 - **[BRANDING.md](BRANDING.md)** — the Identra/SynthPass naming model, messaging guardrails,
   commercial tiers.
-- **[REBRAND_MIGRATION.md](REBRAND_MIGRATION.md)** — the `mlis-*` → `synthpass-*` rename plan this
-  repo already executed; kept as a record of what moved and why.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — engineering rationale, trade-offs, and the
   version-by-version design history (why Tier 1/Tier 2 exist, what got deleted and when).
 - **[LICENSING.md](LICENSING.md)** — the full customer (`fingerprint` → `verify-license`) and
@@ -27,9 +25,10 @@ that's too long-form for there.
 
 ## Historical / origin records
 
-`FOUNDATIONAL_STRATEGY.md`, `synthpass_v2_0.md`, `rebranding_identra_synthpass.md`, and
-`mlis_v2_0_0_preliminary_design.md` are the source notes VISION/ROADMAP/BRANDING were distilled
-from (the last is also the M5 Atlas extraction-redesign design record, referenced from ROADMAP).
+`FOUNDATIONAL_STRATEGY.md` and `synthpass_v2_0.md` are the source notes VISION/ROADMAP/BRANDING
+were distilled from. (The earlier `rebranding_identra_synthpass.md` and
+`mlis_v2_0_0_preliminary_design.md` scratch notes and the `REBRAND_MIGRATION.md` execution record
+have since been removed now that the rename is long complete and folded into `CHANGELOG.md`.)
 Kept for provenance; not maintained as living docs — prefer the current docs above when they
 disagree.
 

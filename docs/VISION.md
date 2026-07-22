@@ -10,7 +10,8 @@
 > **Status:** foundational document. This file states *why* SynthPass exists and where it is
 > going. It is deliberately declarative. Concrete milestones live in
 > [`ROADMAP.md`](ROADMAP.md); brand and stewardship in [`BRANDING.md`](BRANDING.md); the v2
-> technical design record in [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md).
+> technical design record was `mlis_v2_0_0_preliminary_design.md`, since removed and folded into
+> `ROADMAP.md`.
 >
 > House rule (inherited from [`ARCHITECTURE.md`](ARCHITECTURE.md)): say what is true, state
 > limitations plainly, and do not oversell. Where this document describes capability that does

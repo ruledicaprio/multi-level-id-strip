@@ -34,8 +34,8 @@ generation path produces unmistakably synthetic, watermarked documents whose lab
 > credentials: every generated artifact carries a mandatory synthetic watermark and a generic,
 > non-country template, enforced in code. See [docs/BRANDING.md](docs/BRANDING.md) §4.
 
-*Formerly `multi-level-id-strip` / `mlis`; see [docs/REBRAND_MIGRATION.md](docs/REBRAND_MIGRATION.md)
-for the crate-rename mapping.*
+*Formerly `multi-level-id-strip` / `mlis`; see [CHANGELOG.md](CHANGELOG.md) for the crate-rename
+mapping.*
 
 ## 📚 Contents
 
@@ -104,14 +104,15 @@ flowchart LR
 
 ## 🖼️ See it work
 
-<img src="samples/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="380">
+<img src="samples/ocr_fixtures/Croatian_passport_data_page.jpg" alt="Croatian passport data page — public-domain specimen" width="380">
 
 ```
 $ synthpass Croatian_passport_data_page.jpg
 ✔ SPECIMEN SPECIMEN · HRV passport 007007007 · verified in <1s, LLM never ran
 ```
 
-A real run against the public-domain specimen above (from [`samples/`](samples/)): every ICAO
+A real run against the public-domain specimen above (from [`samples/`](samples/); see
+[samples/README.md](samples/README.md) for how the collection is organized): every ICAO
 9303 check digit on the printed MRZ verified mathematically, so the deterministic **Tier 1** path
 handled it end to end — no model call, no guessing.
 
@@ -173,7 +174,7 @@ cargo run -p synthpass-cli -- doctor
 
 # 3. Extract a document (skip the license gate for local development).
 $env:SYNTHPASS_LICENSE_SKIP = "1"
-cargo run -p synthpass-cli -- samples/Croatian_passport_data_page.jpg
+cargo run -p synthpass-cli -- samples/ocr_fixtures/Croatian_passport_data_page.jpg
 
 # 4. ...or run the web app — upload page + JSON API on http://127.0.0.1:8080
 cargo run -p synthpass-serve
@@ -181,7 +182,7 @@ cargo run -p synthpass-serve
 
 ```powershell
 # API example, against synthpass-serve from step 4:
-curl -F "file=@samples/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
+curl -F "file=@samples/ocr_fixtures/Passport_of_Serbia_ID_2009_version.jpg" http://127.0.0.1:8080/api/extract
 ```
 
 <details>
@@ -421,8 +422,12 @@ bound to it, drop `license.mlis` beside the binary, and run. Toolchain rationale
 ├── docs/                   Vision, roadmap, branding, architecture, licensing, corpus coverage
 ├── docker/                 Builder, musl and serve images + compose file
 ├── fuzz/                   cargo-fuzz targets for the untrusted OCR ingest path
-├── samples/                Public-domain specimen documents and expected outputs
+├── samples/                Public-domain specimen documents and expected outputs, organized into
+│                           passports/, id_cards/, driving_licenses/, ocr_fixtures/, misc/ —
+│                           see samples/README.md
 ├── scripts/                Development helpers
+├── tools/                  Standalone scripts not themselves test fixtures (e.g. the Wikipedia
+│                           specimen scraper)
 └── web/                    GitHub Pages demo (static, client-side only)
 ```
 
@@ -474,9 +479,9 @@ was AI-accelerated, across more than one model.
 - **DeepSeek** — foundational architectural strategy
   ([docs/FOUNDATIONAL_STRATEGY.md](docs/FOUNDATIONAL_STRATEGY.md)), advisory and architectural review
 - **GPT** (OpenAI) — the v2.0 roadmap and design records
-  ([docs/synthpass_v2_0.md](docs/synthpass_v2_0.md),
-  [docs/mlis_v2_0_0_preliminary_design.md](docs/mlis_v2_0_0_preliminary_design.md)), building on
-  DeepSeek's foundational strategy
+  ([docs/synthpass_v2_0.md](docs/synthpass_v2_0.md), and the now-removed
+  `docs/mlis_v2_0_0_preliminary_design.md` scratch notes), building on DeepSeek's foundational
+  strategy
 
 Copyright and authorship rest with the human author; the AI tools are credited as assistants, not
 legal authors.

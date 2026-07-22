@@ -3,7 +3,7 @@
 //! Run from the repository root so the in-process model files resolve:
 //!
 //! ```powershell
-//! cargo run -p synthpass-cli -- samples/Croatian_passport_data_page.jpg
+//! cargo run -p synthpass-cli -- samples/ocr_fixtures/Croatian_passport_data_page.jpg
 //! ```
 
 use serde_json::json;
@@ -269,7 +269,7 @@ fn looks_like_image(path: &Path) -> bool {
 /// Minimal shell-style glob matcher: `*` matches any run of characters
 /// (including none), `?` matches exactly one. No bracket/brace/double-star
 /// support — this exists only so `synthpass batch` can accept a pattern like
-/// `samples/*.jpg` without pulling in a `glob` crate dependency for it.
+/// `samples/passports/*.jpg` without pulling in a `glob` crate dependency for it.
 fn glob_match(pattern: &str, name: &str) -> bool {
     fn helper(p: &[u8], n: &[u8]) -> bool {
         match (p.first(), n.first()) {
@@ -283,21 +283,36 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     helper(pattern.as_bytes(), name.as_bytes())
 }
 
+/// Recursively walks `dir`, collecting every file for which `keep` returns
+/// `true`. Used so `collect_batch_inputs` can find images nested in
+/// subdirectories (e.g. `samples/passports/`, `samples/id_cards/`) rather
+/// than only those directly inside the given directory.
+fn walk_dir_files(dir: &Path, keep: &impl Fn(&Path) -> bool, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_dir_files(&path, keep, out);
+        } else if path.is_file() && keep(&path) {
+            out.push(path);
+        }
+    }
+}
+
 /// Resolves `synthpass batch <arg>`'s argument into a sorted list of image
-/// files: every image directly inside `arg` if it's a directory, or every
-/// file in `arg`'s parent directory matching `arg`'s filename as a glob
-/// pattern otherwise (e.g. `samples/*.jpg`). Sorted so batch output order is
-/// deterministic across runs (directory iteration order is not guaranteed
-/// by any platform).
+/// files: every image found recursively under `arg` (including
+/// subdirectories) if it's a directory, or every file in `arg`'s parent
+/// directory matching `arg`'s filename as a glob pattern otherwise (e.g.
+/// `samples/passports/*.jpg`). Sorted so batch output order is deterministic
+/// across runs (directory iteration order is not guaranteed by any
+/// platform).
 fn collect_batch_inputs(arg: &str) -> Result<Vec<PathBuf>, String> {
     let path = Path::new(arg);
     if path.is_dir() {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(path)
-            .map_err(|e| format!("could not read directory {arg}: {e}"))?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|p| p.is_file() && looks_like_image(p))
-            .collect();
+        let mut files = Vec::new();
+        walk_dir_files(path, &|p| looks_like_image(p), &mut files);
         files.sort();
         return Ok(files);
     }
