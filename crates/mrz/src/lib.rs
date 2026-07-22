@@ -66,8 +66,13 @@ impl Default for ParseOptions {
 }
 
 /// Per-field check-digit verification results.
+///
+/// `#[non_exhaustive]`: a future MRZ format may carry a check digit these five
+/// fields don't name, and adding it should not be a breaking change. Construct
+/// one from a `parse_*` function rather than by literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub struct Checks {
     pub document_number: bool,
     pub date_of_birth: bool,
@@ -89,8 +94,13 @@ impl Checks {
     }
 }
 
+/// `#[non_exhaustive]`: ICAO 9303 defines formats this crate does not parse yet
+/// (MRP-style variants, future parts), so `match` on this must carry a `_` arm
+/// and gaining a variant is not a breaking change. Adding MRV-A/MRV-B in 0.3.0
+/// was breaking precisely because this attribute was missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[non_exhaustive]
 pub enum Format {
     Td3,
     Td2,
@@ -112,9 +122,15 @@ pub enum Format {
 /// `ZeroizeOnDrop`, wiping the PII-bearing `String` fields from memory when a
 /// value is dropped. `format` and `checks` carry no PII and are `Copy`, so
 /// they're `#[zeroize(skip)]`.
+///
+/// `#[non_exhaustive]`: this struct grows as the crate decodes more of the
+/// zone — `document_number_full` arrived in 0.4.0 — and that should not break
+/// downstream code. Obtain one from a `parse_*` function; it is an output type
+/// and there is no reason to build it by literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "zeroize", derive(ZeroizeOnDrop))]
+#[non_exhaustive]
 pub struct MrzData {
     #[cfg_attr(feature = "zeroize", zeroize(skip))]
     pub format: Format,
