@@ -87,7 +87,9 @@ input to `fuzz/corpus/<target>/` as a permanent regression seed, add a matching 
 - **Match the surrounding style.** Run `cargo fmt` and `cargo clippy --workspace`; keep comment
   density and naming consistent with the file you're editing.
 - **The `mrz` crate stays zero-dependency** (it compiles to `wasm32`); don't add runtime deps to it.
-- **No PII in logs or fixtures.** Use the public-domain specimens in `samples/`.
+- **No PII in logs or fixtures.** Use the public-domain specimens in `samples/` (organized into
+  `passports/`, `id_cards/`, `driving_licenses/`, `ocr_fixtures/`, `misc/` — see
+  [samples/README.md](samples/README.md)).
 
   This is a review checklist item, not just an aspiration — check it on every PR that touches a
   `tracing` call or the metrics surface:
@@ -132,7 +134,10 @@ in the Docker image.
 
 When in doubt, ask rather than include. Once accepted: rename to the
 `<Country>_<DocType>_Specimen[_<Variant>].<ext>` convention (full country name, e.g.
-`North_Macedonia` not `North_macedonia`), run `cargo run -p synthpass-ocr --release --example
+`North_Macedonia` not `North_macedonia`; see [samples/README.md](samples/README.md) for the full
+naming guide), place it in the matching subdirectory (`samples/passports/`, `samples/id_cards/`,
+or `samples/driving_licenses/` — basenames must stay unique across all of `samples/`, since
+lookups are basename-based), run `cargo run -p synthpass-ocr --release --example
 mrz_corpus -- --dump` in the `synthpass-builder` Docker image to confirm a Tier-1 HIT and read the real
 doc number off the MRZ, add it to `CORPUS` (or `NEGATIVE` if the document has no MRZ at all), and
 update the corresponding row in `docs/CORPUS_COVERAGE.md`.

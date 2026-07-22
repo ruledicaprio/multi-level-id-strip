@@ -2,9 +2,10 @@
 
 > **Status:** foundational document. This is the single linear execution blueprint for
 > SynthPass v2. It reconciles the two roadmaps that preceded it — the *Atlas* extraction
-> redesign ([`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md)) and the
+> redesign (the now-removed `mlis_v2_0_0_preliminary_design.md` scratch notes) and the
 > synthetic-generation roadmap ([`synthpass_v2_0.md`](synthpass_v2_0.md)) — into one M1→M6
-> spine. Where those two disagree, **this file wins**; they remain as design records.
+> spine. Where those two disagree, **this file wins**; `synthpass_v2_0.md` remains as a design
+> record.
 >
 > Read [`VISION.md`](VISION.md) first for the *why*, and [`BRANDING.md`](BRANDING.md) for
 > naming and the crate-rename migration.
@@ -33,7 +34,7 @@ timeline
 | **M2 — Synthetic Document Factory** | Q4 2026 | `synthpass-gen` crate: deterministic fictional identities, layout/render/labels, reproducible seeds, **mandatory synthetic watermark + generic non-country template** | `generate(&Passport, &GeneratorConfig) -> (image, Labels)` produces a checksum-valid MRZ that round-trips back through `mrz` from the rendered image; labels are 100% accurate by construction; watermark renders unconditionally; no runtime leak into the extraction pipeline |
 | **M3 — Degradation & Capture profiles + CLI** | Q4 2026 | Modular degradation pipeline (mobile / scanner / worn / border-control profiles); `synthpass generate` CLI subcommand; JSON sidecar metadata per document | Each profile is reproducible from a seed; CLI emits image + label JSON for a named profile; degradations are composable and individually toggleable; license gate bypassed for generation (it produces no real PII) |
 | **M4 — Regression & Benchmarking** | Q1 2027 | `synthpass-bench`; golden datasets; adversarial red-team generation; CI accuracy gate; `docs/SYNTHPASS.md`, `docs/ADVERSARIAL.md` | A Tier-1 hit-rate guard over a generated corpus runs in CI and **blocks merges on regression**; benchmark reports are generated, not hand-edited; adversarial cases documented — **honestly measured at ~55% (100-seed, clean profile) as of PR #30, not the originally-aspirational 95%; CI gates at 30% as a floor with margin for cross-platform variance, see the execution note below** |
-| **M5 — Extraction platform (Atlas absorbed)** | Q1 2027 | Extraction schema v2 (per-field confidence + provenance), OCR region detection by geometry + orientation, bounded job queue / parallel OCR / configurable LLM contexts / batch API, `tracing` + `/health` + `/metrics`, enforced licensing tiers, GBNF-constrained Tier-2 decoding | The Atlas DoDs in [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md) §3–§8 are met; corpus hit-rate does not regress; batch load test passes; no PII appears in any log line |
+| **M5 — Extraction platform (Atlas absorbed)** | Q1 2027 | Extraction schema v2 (per-field confidence + provenance), OCR region detection by geometry + orientation, bounded job queue / parallel OCR / configurable LLM contexts / batch API, `tracing` + `/health` + `/metrics`, enforced licensing tiers, GBNF-constrained Tier-2 decoding | The Atlas DoDs in the now-removed `mlis_v2_0_0_preliminary_design.md` §3–§8 are met; corpus hit-rate does not regress; batch load test passes; no PII appears in any log line |
 | **M6 — Expansion & Enterprise readiness** | Q2 2027 | TD1 / TD2 / MRVA / MRVB; declarative document layouts; dataset exports (COCO / YOLO / JSONL / Hugging Face); plugin architecture; air-gapped deployment guide; commercial "Pro" closed beta | Non-TD3 formats generate and validate; at least one export format consumed by an external trainer end-to-end; a third-party plugin builds against a stable interface following the docs; air-gapped install verified; Pro-beta feedback collected |
 
 ## Architecture evolution
@@ -74,8 +75,8 @@ flowchart LR
 - Builds are verified through the Ubuntu Docker builder (`synthpass-builder`, see
   `docker/Dockerfile.builder` / [`CONTRIBUTING.md`](../CONTRIBUTING.md)); native `cargo` also
   works directly on Windows/macOS/Linux without a linker workaround.
-- The workspace crate rename (`mlis-*` → `synthpass-*`) has landed — see
-  [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md) for the executed mapping.
+- The workspace crate rename (`mlis-*` → `synthpass-*`) has landed — see `CHANGELOG.md` for the
+  executed mapping.
 - **M1, M2, and M3 are done.** `mrz::format_td3`, the `synthpass-gen` factory, the degradation
   profiles, and the `synthpass generate` CLI subcommand are all shipped and tested. M2's font
   blocker is resolved: OFL **OCR-B** (`jaycee723/ocr-b`, © Raisty) and **PT Sans** (Google Fonts
@@ -134,8 +135,8 @@ flowchart LR
   parity corpus on qwen2.5-1.5b-instruct-q4_k_m: **repair fallbacks 2 → 0** (Atlas §8's stated
   criterion, met), **field match rate unchanged at 19/42 (45.2%)**, **wall time +55%** (102s →
   158s). Repair had already been salvaging those two documents, so eliminating the parse-failure
-  class bought robustness rather than accuracy — precisely the risk
-  [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md) §12 named. It ships on
+  class bought robustness rather than accuracy — precisely the risk the now-removed
+  `mlis_v2_0_0_preliminary_design.md` §12 named. It ships on
   by default (`SYNTHPASS_LLM_GRAMMAR=0` opts out) because unrepresentable-by-construction beats
   repaired-after-the-fact, and the latency lands only on the Tier-2 path that runs when Tier 1 has
   already failed. Revisiting with a larger GGUF is Future Work, not an M5 gate.
@@ -254,8 +255,8 @@ flowchart LR
 Beyond M6, and deliberately not committed:
 
 - **A larger Tier-2 model — target [Qwen3-4B](https://hf.co/Qwen/Qwen3-4B-GGUF), not the 3B/7B
-  the design record names.** [`mlis_v2_0_0_preliminary_design.md`](mlis_v2_0_0_preliminary_design.md)
-  §8's "bring a bigger model (Qwen 3B/7B)" line predates two facts that change the answer, and
+  the design record names.** The now-removed `mlis_v2_0_0_preliminary_design.md` §8's "bring a
+  bigger model (Qwen 3B/7B)" line predates two facts that change the answer, and
   **this file wins** where they disagree:
 
   | Candidate | Q4_K_M size | License | Fits a 4 GB card |

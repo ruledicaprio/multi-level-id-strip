@@ -3,8 +3,9 @@
 > **Status:** foundational document. It defines the brand architecture for the SynthPass
 > ecosystem, the stewardship model, naming and repository strategy, the commercial tiers, and
 > trademark/IP intent. It is a companion to [`VISION.md`](VISION.md) (the *why*) and
-> [`ROADMAP.md`](ROADMAP.md) (the *how*). The mechanical crate rename it implies is specified
-> in [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md).
+> [`ROADMAP.md`](ROADMAP.md) (the *how*). The mechanical crate rename it implied (`mlis-*` →
+> `synthpass-*`) has been executed and is complete; see `CHANGELOG.md` for the crate-mapping
+> record.
 
 ## 1. Identra — the steward
 
@@ -46,7 +47,7 @@ keeps a distinct purpose. This convention is codified: new products in the ecosy
 ## 3. Naming & repository strategy
 
 - **Primary repository:** `synthpass` (currently `multi-level-id-strip`). The rename is an
-  intent recorded here and executed per [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md).
+  intent recorded here; the executed crate mapping is recorded in `CHANGELOG.md`.
 - **GitHub organisation:** target a dedicated `identra-org` (or similar) to house all
   ecosystem projects, for discoverability and a professional structure. **Declared intent
   only** — no organisation or remote migration is performed as part of adopting these docs.
@@ -55,8 +56,7 @@ keeps a distinct purpose. This convention is codified: new products in the ecosy
   independent, dependency-light, and separately publishable. Its companion `mrz-wasm` (the
   browser demo) travels with it.
 - **Workspace crates** are renamed `mlis-*` → `synthpass-*` (with the new `synthpass-gen` and,
-  later, `synthpass-bench`). The full mapping and sequencing are in
-  [`REBRAND_MIGRATION.md`](REBRAND_MIGRATION.md).
+  later, `synthpass-bench`). The full mapping and sequencing is recorded in `CHANGELOG.md`.
 
 A formal brand book (logo, colour palette, typography) is deferred; stating the intent to
 create one signals commitment to a consistent public identity without over-investing before it
@@ -119,6 +119,5 @@ matures (modelled on Linux Foundation / Eclipse Foundation practice):
 
 ---
 
-*This document supersedes the earlier scratch notes
-[`rebranding_identra_synthpass.md`](rebranding_identra_synthpass.md); that file remains as the
-origin record.*
+*This document supersedes the earlier scratch notes (`rebranding_identra_synthpass.md`,
+since removed); this file is now the canonical record.*

@@ -116,8 +116,8 @@ extraction.
   **unchanged at 19/42 (45.2%)** — repair was already successfully salvaging those two documents,
   so removing the need for it changed nothing downstream. Wall time rose **~55%** (102s → 158s),
   partly logit masking and partly the grammar forcing all ten keys where the model previously
-  stopped early. This is the outcome `docs/mlis_v2_0_0_preliminary_design.md` §12 flagged as a
-  risk — GBNF on a 1.5B model improves syntax more than semantics — and it is recorded rather than
+  stopped early. This is the outcome the (now-removed) `docs/mlis_v2_0_0_preliminary_design.md`
+  §12 flagged as a risk — GBNF on a 1.5B model improves syntax more than semantics — and it is recorded rather than
   quietly dropped. It ships on by default because making malformed output *unrepresentable* is the
   "deterministic before probabilistic" principle applied to Tier 2, and the cost falls only on the
   fallback path that runs when Tier 1 has already failed.
@@ -155,7 +155,8 @@ extraction.
   workspace mechanically (crate directories, package names, `use` paths, the CLI/serve
   binaries, CI, Docker, and top-level docs) with **no behavior change**: `mrz`/`mrz-wasm`
   keep their names (see `docs/BRANDING.md`), and `MLIS_*` environment variables are now
-  `SYNTHPASS_*`. See `docs/REBRAND_MIGRATION.md` for the full crate-mapping table and
+  `SYNTHPASS_*`. (The `docs/REBRAND_MIGRATION.md` crate-mapping record has since been removed
+  now that the rename is long complete; this entry is the mapping's remaining record.) See
   `docs/VISION.md` / `docs/ROADMAP.md` for where the platform is headed next.
 
 ### Removed
