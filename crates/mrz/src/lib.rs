@@ -20,6 +20,15 @@
 //! A valid composite check digit proves a faithful *read*; it does not prove
 //! the document is in date — see [`MrzData::validity`].
 
+/// Compiles and runs every Rust example in `README.md` as a doctest, so a
+/// README snippet can never drift from the API it demonstrates. `cfg(doctest)`
+/// means this is *only* built while collecting doctests — the README is not
+/// injected into the rendered crate documentation, which has its own prose
+/// above.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "zeroize")]
