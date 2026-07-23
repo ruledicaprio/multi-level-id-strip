@@ -129,6 +129,39 @@ jobs:
       - name: Zero-dependency build on the declared MSRV
         run: cargo check -p mrz --no-default-features
 
+  # Every breaking release `mrz` has ever shipped was an accidental addition to
+  # a public type — `Format` gained MrvA/MrvB in 0.3.0, `MrzData` gained
+  # `document_number_full` in 0.4.0 — and each forced downstream Cargo.toml
+  # churn under Cargo's 0.x rules, where the *minor* slot is the breaking slot.
+  # The 0.3.0 break passed both `cargo test -p mrz` and `cargo publish
+  # --dry-run` (each builds mrz in isolation) and only surfaced as an E0004 in
+  # synthpass-pipeline. This job diffs the crate's public API against the
+  # published baseline on crates.io instead, so the compatibility rule in
+  # CONTRIBUTING.md is enforced rather than asserted.
+  #
+  # No `release-type`: the permitted bump is derived from the version in
+  # crates/mrz/Cargo.toml, so a PR that breaks the API has to carry its own
+  # version bump to go green. No `rust-toolchain` either — the action installs
+  # latest stable deliberately, to keep rustdoc current and false positives
+  # down. That is unrelated to the 1.82 consumer floor the `msrv` job enforces.
+  semver:
+    name: mrz semver (${{ matrix.feature-group }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `default-features` is the zero-dependency surface that actually
+        # ships; `all-features` covers the serde/zeroize derives, which docs.rs
+        # renders and which the default run cannot see.
+        feature-group: [default-features, all-features]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: mrz
+          feature-group: ${{ matrix.feature-group }}
+
   # Cross-platform proof: `synthpass-ocr` (ocrs/rten) builds and tests here with
   # no system OCR libraries at all — the "zero Docker/Python, genuinely pure
   # Rust" claim, exercised on macOS on every push.
