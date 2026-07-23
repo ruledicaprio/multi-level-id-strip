@@ -149,6 +149,37 @@ reference (e.g. to check whether a document format is genuinely MRZ-bearing befo
 whether to source a specimen) but nothing from it is ever fetched programmatically or stored in
 this repository.
 
+## Semver policy (the `mrz` crate)
+
+`crates/mrz` is [published to crates.io](https://crates.io/crates/mrz) on its own version line,
+decoupled from the workspace. It is pre-1.0, so **the minor slot is the breaking slot** — `^0.5`
+resolves `0.5.x` but never `0.6.0`, which means a careless minor bump forces a `Cargo.toml` edit
+on every consumer.
+
+Which slot a change lands in follows from how the type is declared:
+
+- `MrzData`, `Checks` and `Format` are `#[non_exhaustive]`. Callers already cannot match or
+  construct them exhaustively, so **adding a field or variant is a patch** (`0.5.1`).
+- The five emit-side input structs — `Td3Fields`, `Td2Fields`, `Td1Fields`, `MrvAFields`,
+  `MrvBFields` — are deliberately left exhaustive, because `#[non_exhaustive]` rejects *every*
+  struct expression from another crate (`..Default::default()` is refused too, E0639), leaving
+  callers nothing but `default()` plus field-by-field mutation. So **adding a field to one of
+  those is breaking** (`0.6.0`). Output types grow with the crate's capability; input types are
+  pinned to a spec ICAO controls and has not changed in decades.
+- Removing or renaming anything public, changing a signature, or tightening a contract is
+  likewise breaking. Test-only and CI-only changes ship no release at all.
+
+The `semver` CI job enforces this with [`cargo-semver-checks`](https://github.com/obi1kenobi/cargo-semver-checks),
+diffing the branch's public API against the latest version published on crates.io, under both the
+default (zero-dependency) and `--all-features` surfaces. Because the permitted bump is derived
+from `version` in `crates/mrz/Cargo.toml`, **a PR that breaks the API must bump the version in
+that same PR** to go green.
+
+This is enforced rather than documented because `cargo test -p mrz` and `cargo publish --dry-run`
+both build the crate in isolation and cannot see the breakage: 0.3.0 shipped a break that passed
+both and only surfaced when `synthpass-pipeline` failed to compile with E0004. Reproduce the job
+locally with `cargo semver-checks --package mrz`.
+
 ## Git workflow
 
 `main` is a protected branch: no direct pushes, no force-pushes, even for the repo owner. Every
